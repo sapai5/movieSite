@@ -2752,3 +2752,255 @@ a {
     font-size: 11px;
   }
 }
+/* ===== PWA INSTALL BUTTONS & MODAL
+ ===== */
+.gate-install-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  background: rgba(229, 9, 20, 0.12);
+  border: 1px solid rgba(229, 9, 20, 0.4);
+  border-radius: 6px;
+  color: #ff4d58;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.gate-install-btn:hover {
+  background: rgba(229, 9, 20, 0.22);
+  border-color: #e50914;
+  color: #fff;
+}
+.nav-install-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  color: #eee;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  margin-right: 8px;
+}
+.nav-install-btn:hover {
+  background: #e50914;
+  border-color: #e50914;
+  color: #fff;
+}
+.ios-pwa-install-action {
+  padding: 6px 12px;
+  background: #e50914;
+  border: none;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.2s;
+}
+.ios-pwa-install-action:hover {
+  background: #b80710;
+}
+.install-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(8px);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  animation: faidIn 0.2s ease;
+}
+.install-modal-content {
+  position: relative;
+  width: 100%;
+  max-width: 440px;
+  background: #181818;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 24px 20px;
+  color: #fff;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.8);
+}
+.install-modal-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  background: none;
+  border: none;
+  color: #888;
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+}
+.install-modal-close:hover {
+  color: #fff;
+}
+.install-modal-header {
+  text-align: center;
+  margin-bottom: 20px;
+}
+.install-modal-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: rgba(229, 9, 20, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 12px;
+}
+.install-modal-header h2 {
+  font-size: 20px;
+  font-weight: 700;
+  margin: 0 0 6px;
+}
+.install-modal-header p {
+  font-size: 13px;
+  color: #aaa;
+  margin: 0;
+  line-height: 1.4;
+}
+.install-steps-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 20px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+.install-step-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.step-num {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #e50914;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.step-text {
+  font-size: 13px;
+  line-height: 1.45;
+  color: #ddd;
+}
+.step-text strong {
+  color: #fff;
+}
+.step-icon {
+  vertical-align: middle;
+  margin: 0 3px;
+  color: #e50914;
+}
+.install-native-box {
+  text-align: center;
+  padding: 16px 0 20px;
+}
+.install-native-box p {
+  font-size: 13px;
+  color: #ccc;
+  margin-bottom: 16px;
+}
+.install-primary-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 12px;
+  background: #e50914;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.install-primary-btn:hover {
+  background: #b80710;
+}
+.install-desktop-guide {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 20px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 16px;
+  border-radius: 8px;
+}
+.guide-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.guide-row strong {
+  display: block;
+  font-size: 13px;
+  color: #fff;
+  margin-bottom: 2px;
+}
+.guide-row p {
+  font-size: 12px;
+  color: #aaa;
+  margin: 0;
+  line-height: 1.4;
+}
+.install-already-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  background: rgba(70, 211, 105, 0.1);
+  border: 1px solid rgba(70, 211, 105, 0.3);
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+.install-already-banner strong {
+  display: block;
+  font-size: 14px;
+  color: #46d369;
+}
+.install-already-banner p {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: #bbb;
+}
+.install-done-btn {
+  width: 100%;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  color: #ccc;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.install-done-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}

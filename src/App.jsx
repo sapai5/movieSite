@@ -2,6 +2,7 @@ import { Routes, Route, useLocation } from 'react-router-dom'
 import Navbar from './components/Navbar'
 import MobileBottomNav from './components/MobileBottomNav'
 import IOSInstallPrompt from './components/IOSInstallPrompt'
+import InstallModal from './components/InstallModal'
 import AccessGate from './components/AccessGate'
 import Home from './pages/Home'
 import Movies from './pages/Movies'
@@ -86,8 +87,9 @@ function App() {
       {/* iOS & Mobile Bottom Navigation Bar */}
       <MobileBottomNav />
 
-      {/* iOS Add to Home Screen Prompt */}
+      {/* PWA Add to Home Screen Banner & Interactive Modal */}
       <IOSInstallPrompt />
+      <InstallModal />
     </div>
   )
 }

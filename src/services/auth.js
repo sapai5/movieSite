@@ -1,14 +1,9 @@
-// Authentication & Whitelist Service
+// Authentication Service
+// Tokens are verified server-side by /api/verify against the ACCESS_TOKENS env var,
+// so a token works on every device (laptop, phone, etc.).
 
-const STORAGE_KEYS = {
-  PROTECTION: 'movieplayer_protection_enabled',
-  ADMIN_PASS: 'movieplayer_admin_password',
-  ADMIN_SESSION: 'movieplayer_admin_session',
-  WHITELIST: 'movieplayer_whitelist',
-  USER_TOKEN: 'movieplayer_user_token',
-}
-
-const DEFAULT_ADMIN_PASS = 'admin123'
+const USER_TOKEN_KEY = 'movieplayer_user_token'
+const COOKIE_NAME = 'movieplayer_token'
 
 // --- Cookie Helpers ---
 export function setCookie(name, value, days = 365) {
@@ -25,150 +20,80 @@ export function deleteCookie(name) {
   document.cookie = `${encodeURIComponent(name)}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`
 }
 
-// --- Protection Toggle ---
-export function isProtectionEnabled() {
-  const saved = localStorage.getItem(STORAGE_KEYS.PROTECTION)
-  return saved === null ? true : saved === 'true'
+function safeGet(key) {
+  try { return localStorage.getItem(key) } catch { return null }
 }
-
-export function setProtectionEnabled(enabled) {
-  localStorage.setItem(STORAGE_KEYS.PROTECTION, enabled ? 'true' : 'false')
+function safeSet(key, value) {
+  try { localStorage.setItem(key, value) } catch { /* ignore */ }
 }
-
-// --- Whitelist Management ---
-export function getWhitelist() {
-  const raw = localStorage.getItem(STORAGE_KEYS.WHITELIST)
-  if (!raw) {
-    return []
-  }
-  try {
-    const parsed = JSON.parse(raw)
-    // Filter out any legacy demo passes
-    const cleaned = parsed.filter(
-      (item) => item.token !== 'VIP-NETFLIX-2026' && item.id !== 'seed-1'
-    )
-    if (cleaned.length !== parsed.length) {
-      localStorage.setItem(STORAGE_KEYS.WHITELIST, JSON.stringify(cleaned))
-    }
-    return cleaned
-  } catch {
-    return []
-  }
-}
-
-export function saveWhitelist(list) {
-  localStorage.setItem(STORAGE_KEYS.WHITELIST, JSON.stringify(list))
+function safeRemove(key) {
+  try { localStorage.removeItem(key) } catch { /* ignore */ }
 }
 
 export function generateToken(prefix = 'MP') {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
-  let part1 = ''
-  let part2 = ''
-  for (let i = 0; i < 4; i++) part1 += chars.charAt(Math.floor(Math.random() * chars.length))
-  for (let i = 0; i < 4; i++) part2 += chars.charAt(Math.floor(Math.random() * chars.length))
+  const bytes = new Uint32Array(8)
+  crypto.getRandomValues(bytes)
+  const pick = (n) => chars.charAt(n % chars.length)
+  const part1 = Array.from(bytes.slice(0, 4), pick).join('')
+  const part2 = Array.from(bytes.slice(4), pick).join('')
   return `${prefix}-${part1}-${part2}`
-}
-
-export function addWhitelistUser(label, customToken = '') {
-  const list = getWhitelist()
-  const token = (customToken.trim() || generateToken()).toUpperCase()
-
-  // Prevent duplicate tokens
-  if (list.some((item) => item.token.toUpperCase() === token)) {
-    throw new Error(`Token "${token}" already exists in whitelist.`)
-  }
-
-  const newEntry = {
-    id: `user-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
-    label: label.trim() || 'Invited User',
-    token,
-    createdAt: new Date().toISOString(),
-    active: true,
-  }
-
-  list.unshift(newEntry)
-  saveWhitelist(list)
-  return newEntry
-}
-
-export function toggleUserStatus(id) {
-  const list = getWhitelist().map((item) => {
-    if (item.id === id) {
-      return { ...item, active: !item.active }
-    }
-    return item
-  })
-  saveWhitelist(list)
-  return list
-}
-
-export function deleteWhitelistUser(id) {
-  const list = getWhitelist().filter((item) => item.id !== id)
-  saveWhitelist(list)
-  return list
 }
 
 // --- User Authorization ---
 export function getUserStoredToken() {
-  // Check localStorage first, then persistent Cookie
-  return localStorage.getItem(STORAGE_KEYS.USER_TOKEN) || getCookie('movieplayer_token')
+  return safeGet(USER_TOKEN_KEY) || getCookie(COOKIE_NAME)
 }
 
-export function isTokenValid(token) {
-  if (!token) return false
+// Returns true / false, or null if the server couldn't be reached.
+export async function verifyToken(token) {
+  if (!token || !token.trim()) return false
+  try {
+    const res = await fetch('/api/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: token.trim() }),
+    })
+    if (res.status === 200 || res.status === 401) {
+      const data = await res.json()
+      return Boolean(data.valid)
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+function storeToken(token) {
   const clean = token.trim().toUpperCase()
-  // Ensure legacy demo pass is not recognized
-  if (clean === 'VIP-NETFLIX-2026') return false
-  const list = getWhitelist()
-  return list.some((item) => item.token.toUpperCase() === clean && item.active)
+  safeSet(USER_TOKEN_KEY, clean)
+  setCookie(COOKIE_NAME, clean, 365)
 }
 
-export function isUserAuthorized() {
-  if (!isProtectionEnabled()) return true
-  const token = getUserStoredToken()
-  return isTokenValid(token)
-}
-
-export function authorizeUser(token) {
-  if (!isTokenValid(token)) {
+export async function authorizeUser(token) {
+  const valid = await verifyToken(token)
+  if (valid === null) {
+    return { success: false, message: 'Could not reach the server. Check your connection and try again.' }
+  }
+  if (!valid) {
     return { success: false, message: 'Invalid or deactivated access token.' }
   }
-  const clean = token.trim().toUpperCase()
-  localStorage.setItem(STORAGE_KEYS.USER_TOKEN, clean)
-  setCookie('movieplayer_token', clean, 365)
+  storeToken(token)
   return { success: true }
 }
 
+// Re-checks the saved token with the server. If the server is unreachable
+// (e.g. offline PWA launch), a previously saved token is trusted.
+export async function checkStoredAuthorization() {
+  const token = getUserStoredToken()
+  if (!token) return false
+  const valid = await verifyToken(token)
+  if (valid === null) return true
+  if (!valid) logoutUser()
+  return valid
+}
+
 export function logoutUser() {
-  localStorage.removeItem(STORAGE_KEYS.USER_TOKEN)
-  deleteCookie('movieplayer_token')
-}
-
-// --- Admin Authentication ---
-export function getAdminPassword() {
-  return localStorage.getItem(STORAGE_KEYS.ADMIN_PASS) || DEFAULT_ADMIN_PASS
-}
-
-export function setAdminPassword(newPassword) {
-  if (!newPassword || newPassword.trim().length < 4) {
-    throw new Error('Password must be at least 4 characters.')
-  }
-  localStorage.setItem(STORAGE_KEYS.ADMIN_PASS, newPassword.trim())
-}
-
-export function isAdminAuthenticated() {
-  return sessionStorage.getItem(STORAGE_KEYS.ADMIN_SESSION) === 'true'
-}
-
-export function loginAdmin(password) {
-  const current = getAdminPassword()
-  if (password === current) {
-    sessionStorage.setItem(STORAGE_KEYS.ADMIN_SESSION, 'true')
-    return true
-  }
-  return false
-}
-
-export function logoutAdmin() {
-  sessionStorage.removeItem(STORAGE_KEYS.ADMIN_SESSION)
+  safeRemove(USER_TOKEN_KEY)
+  deleteCookie(COOKIE_NAME)
 }
