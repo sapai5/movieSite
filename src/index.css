@@ -2578,3 +2578,23 @@ a {
 .nav-search.is-hidden {
   display: none;
 }
+
+/* ===== iOS SAFE AREA (notch / Dynamic Island) =====
+   With viewport-fit=cover the page runs under the status bar, so the navbar
+   grows by env(safe-area-inset-top) on real iPhones. Desktop dev tools report
+   0 for this, which is why the overlap only shows up on a real device. */
+@media (max-width: 768px) {
+  :root {
+    --nav-safe-top: max(12px, env(safe-area-inset-top));
+    /* top padding + 40px buttons + 12px bottom padding */
+    --nav-height: calc(var(--nav-safe-top) + 52px);
+  }
+  .navbar,
+  .navbar.scrolled {
+    padding-top: var(--nav-safe-top);
+    padding-bottom: 12px;
+  }
+  .search-page {
+    padding-top: calc(var(--nav-height) + 16px);
+  }
+}
