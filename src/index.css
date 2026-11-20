@@ -2598,3 +2598,21 @@ a {
     padding-top: calc(var(--nav-height) + 16px);
   }
 }
+
+/* Shown briefly when an ad hijacks the player frame and we restore it */
+.ad-blocked-toast {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  padding: 8px 14px;
+  border-radius: 20px;
+  background: rgba(20, 20, 20, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  pointer-events: none;
+  white-space: nowrap;
+}

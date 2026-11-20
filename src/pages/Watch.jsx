@@ -63,6 +63,17 @@ export default function Watch() {
   const secondsRef = useRef(0)
   const durationRef = useRef(5400)
 
+  // Ad-hijack guard: the sandbox stops ads from redirecting this page, so ad
+  // scripts navigate the player frame itself instead. The player only loads
+  // once; any later load of the frame is an ad taking it over, so put the
+  // player back (and seek to where we were).
+  const [playerNonce, setPlayerNonce] = useState(0)
+  const frameLoadsRef = useRef(0)
+  const frameCreatedAtRef = useRef(Date.now())
+  const restoreTimesRef = useRef([])
+  const seekAfterRestoreRef = useRef(0)
+  const [adBlockedNotice, setAdBlockedNotice] = useState(false)
+
   // 1. Fetch metadata
   useEffect(() => {
     setLoading(true)
@@ -210,10 +221,44 @@ export default function Watch() {
   }
 
   const handleIframeLoad = () => {
+    frameLoadsRef.current += 1
+    const sinceCreated = Date.now() - frameCreatedAtRef.current
+
+    // A second load well after start-up means the frame was navigated away
+    // from the player (ad hijack). Quick start-up redirects are allowed.
+    if (frameLoadsRef.current > 1 && sinceCreated > 5000) {
+      const now = Date.now()
+      restoreTimesRef.current = restoreTimesRef.current.filter((t) => now - t < 60000)
+      // Safety valve: if something keeps navigating the frame, stop fighting it
+      if (restoreTimesRef.current.length < 5) {
+        restoreTimesRef.current.push(now)
+        seekAfterRestoreRef.current = secondsRef.current
+        persistProgress(secondsRef.current)
+        setResumePrompt(null)
+        setAdBlockedNotice(true)
+        setTimeout(() => setAdBlockedNotice(false), 3000)
+        setPlayerNonce((n) => n + 1)
+        return
+      }
+    }
+
     if (selectedServer === 'vidrift') {
       applyQuality(selectedQuality)
       setTimeout(() => applyQuality(selectedQuality), 1500)
       setTimeout(() => applyQuality(selectedQuality), 3500)
+
+      // Restored after an ad hijack: jump back to where we were
+      const seekTo = seekAfterRestoreRef.current
+      if (seekTo > 0 && frameLoadsRef.current === 1) {
+        seekAfterRestoreRef.current = 0
+        const seek = () => {
+          try {
+            iframeRef.current?.contentWindow?.postMessage({ type: 'vidrift:seek', time: seekTo }, '*')
+          } catch { /* ignore */ }
+        }
+        setTimeout(seek, 1500)
+        setTimeout(seek, 3500)
+      }
     }
   }
 
@@ -267,6 +312,17 @@ export default function Watch() {
     navigate(`/watch/tv/${mediaId}/${s}/${e}`)
   }
 
+  const currentServerObj = SERVERS.find((s) => s.id === selectedServer) || SERVERS[0]
+  const playerSrc = isTVRoute
+    ? currentServerObj.getTvUrl(mediaId, currentSeason, currentEpisode, englishDefault)
+    : currentServerObj.getMovieUrl(mediaId, englishDefault)
+
+  const playerKey = `${playerSrc}-${selectedServer}-${playerNonce}`
+  useEffect(() => {
+    frameLoadsRef.current = 0
+    frameCreatedAtRef.current = Date.now()
+  }, [playerKey])
+
   if (loading) {
     return (
       <div className="watch-page">
@@ -276,11 +332,6 @@ export default function Watch() {
       </div>
     )
   }
-
-  const currentServerObj = SERVERS.find((s) => s.id === selectedServer) || SERVERS[0]
-  const playerSrc = isTVRoute
-    ? currentServerObj.getTvUrl(mediaId, currentSeason, currentEpisode, englishDefault)
-    : currentServerObj.getMovieUrl(mediaId, englishDefault)
 
   const title = details?.title || details?.name || 'Now Playing'
   const year = (details?.release_date || details?.first_air_date) ? new Date(details.release_date || details.first_air_date).getFullYear() : ''
@@ -408,13 +459,21 @@ export default function Watch() {
           </div>
         )}
 
+        {adBlockedNotice && (
+          <div className="ad-blocked-toast">Blocked an ad, restoring your player…</div>
+        )}
+
         <iframe
           ref={iframeRef}
-          key={`${playerSrc}-${selectedServer}`}
+          key={playerKey}
           src={playerSrc}
           onLoad={handleIframeLoad}
           allowFullScreen
           allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
+          // Block the player from redirecting this page (no allow-top-navigation).
+          // allow-same-origin and allow-popups are required: VidRift refuses to
+          // play without them (it checks storage access and probes window.open).
+          sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-presentation allow-orientation-lock allow-pointer-lock"
           referrerPolicy="origin"
           title={title}
         />
