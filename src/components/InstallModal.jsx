@@ -1,4 +1,4 @@
-import { state, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { FiX, FiShare, FiPlusSquare, FiDownload, FiCheckCircle, FiSmartphone, FiMonitor } from 'react-icons/fi'
 import { isAppStandalone, isIOSDevice, promptNativeInstall, hasNativeInstallPrompt } from '../services/install'
 
