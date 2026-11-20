@@ -1,50 +1,72 @@
-import { useState, useEffect } from 'react'
-import { useSearchParams, useNavigate } from 'react-router-dom'
+import { useState, useEffect, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { searchMulti, getImageUrl } from '../services/tmdb'
 import MovieModal from '../components/MovieModal'
 import { FaStar } from 'react-icons/fa'
 
 export default function Search() {
   const [searchParams, setSearchParams] = useSearchParams()
-  const initialQuery = searchParams.get('q') || ''
-  const [query, setQuery] = useState(initialQuery)
+  const urlQuery = searchParams.get('q') || ''
+  const [query, setQuery] = useState(urlQuery)
   const [results, setResults] = useState([])
   const [filterType, setFilterType] = useState('all') // 'all', 'movie', 'tv'
   const [loading, setLoading] = useState(false)
+  const [searchedFor, setSearchedFor] = useState('')
   const [selected, setSelected] = useState(null)
-  const [totalResults, setTotalResults] = useState(0)
-  const navigate = useNavigate()
+  const requestId = useRef(0)
+  const inputRef = useRef(null)
 
+  // Focus the box with the cursor after any text carried over from the navbar
   useEffect(() => {
-    const q = searchParams.get('q')
-    if (q) {
-      setQuery(q)
-      performSearch(q)
-    }
-  }, [searchParams])
+    const el = inputRef.current
+    if (!el) return
+    el.focus({ preventScroll: true })
+    const end = el.value.length
+    try { el.setSelectionRange(end, end) } catch { /* type=search may not support it */ }
+  }, [])
 
-  const performSearch = async (q) => {
-    if (!q.trim()) return
-    setLoading(true)
-    try {
-      const data = await searchMulti(q)
-      // Filter out people or items without posters
-      const items = (data.results || []).filter(
-        (item) => (item.media_type === 'movie' || item.media_type === 'tv') && item.poster_path
-      )
-      setResults(items)
-      setTotalResults(items.length)
-    } catch (err) {
-      console.error(err)
+  // Keep the box in sync if the URL changes from elsewhere (e.g. navbar search)
+  useEffect(() => {
+    setQuery((current) => (current.trim() === urlQuery.trim() ? current : urlQuery))
+  }, [urlQuery])
+
+  // Search as you type (debounced)
+  useEffect(() => {
+    const q = query.trim()
+    const id = ++requestId.current
+
+    if (!q) {
+      setResults([])
+      setSearchedFor('')
+      setLoading(false)
+      if (urlQuery) setSearchParams({}, { replace: true })
+      return
     }
-    setLoading(false)
-  }
+
+    setLoading(true)
+    const timer = setTimeout(async () => {
+      if (q !== urlQuery) setSearchParams({ q }, { replace: true })
+      try {
+        const data = await searchMulti(q)
+        if (id !== requestId.current) return // a newer search has started
+        const items = (data.results || []).filter(
+          (item) => (item.media_type === 'movie' || item.media_type === 'tv') && item.poster_path
+        )
+        setResults(items)
+        setSearchedFor(q)
+      } catch (err) {
+        console.error(err)
+      }
+      if (id === requestId.current) setLoading(false)
+    }, 300)
+
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query])
 
   const handleSubmit = (e) => {
     e.preventDefault()
-    if (query.trim()) {
-      setSearchParams({ q: query.trim() })
-    }
+    e.target.querySelector('input')?.blur() // close the phone keyboard
   }
 
   const filteredResults = results.filter((item) => {
@@ -58,16 +80,17 @@ export default function Search() {
         <form onSubmit={handleSubmit}>
           <input
             className="search-input-large"
-            type="text"
+            type="search"
+            enterKeyHint="search"
             placeholder="Search for movies or TV series..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            autoFocus
+            ref={inputRef}
           />
         </form>
 
         <div className="search-meta-row">
-          {totalResults > 0 && (
+          {results.length > 0 && (
             <p className="search-results-info">Found {filteredResults.length} title{filteredResults.length !== 1 ? 's' : ''}</p>
           )}
 
@@ -96,10 +119,10 @@ export default function Search() {
         </div>
       </div>
 
-      {loading ? (
+      {loading && results.length === 0 ? (
         <div className="loading-container"><div className="spinner"></div></div>
       ) : (
-        <div className="search-grid">
+        <div className={`search-grid ${loading ? 'is-updating' : ''}`}>
           {filteredResults.map((item) => {
             const title = item.title || item.name || 'Untitled'
             const dateStr = item.release_date || item.first_air_date || ''
@@ -130,9 +153,9 @@ export default function Search() {
         </div>
       )}
 
-      {!loading && results.length === 0 && initialQuery && (
+      {!loading && results.length === 0 && searchedFor && (
         <p style={{ color: 'var(--text-secondary)', textAlign: 'center', padding: '60px 0' }}>
-          No titles found for &quot;{initialQuery}&quot;
+          No titles found for &quot;{searchedFor}&quot;
         </p>
       )}
 

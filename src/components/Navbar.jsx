@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Link, NavLink, useNavigate } from 'react-router-dom'
+import { Link, NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { FiSearch, FiDownload } from 'react-icons/fi'
 import { openInstallGuide, isAppStandalone } from '../services/install'
 
@@ -8,6 +8,8 @@ export default function Navbar() {
   const [query, setQuery] = useState('')
   const [standalone, setStandalone] = useState(() => isAppStandalone())
   const navigate = useNavigate()
+  const { pathname } = useLocation()
+  const onSearchPage = pathname === '/search'
 
   useEffect(() => {
     setStandalone(isAppStandalone())
@@ -16,11 +18,26 @@ export default function Navbar() {
     return () => window.removeEventListener('scroll', onScroll)
   }, [])
 
+  // The search page has its own box, so clear this one whenever we land there
+  useEffect(() => {
+    if (onSearchPage) setQuery('')
+  }, [onSearchPage])
+
+  const goToSearch = (text) => {
+    const q = text.trim()
+    navigate(q ? '/search?q=' + encodeURIComponent(q) : '/search')
+  }
+
+  // Start searching as soon as you type: hand off to the live search page
+  const handleChange = (e) => {
+    const value = e.target.value
+    setQuery(value)
+    if (value.trim()) goToSearch(value)
+  }
+
   const handleSearch = (e) => {
     e.preventDefault()
-    if (query.trim()) {
-      navigate('/search?q=' + encodeURIComponent(query.trim()))
-    }
+    goToSearch(query)
   }
 
   return (
@@ -42,18 +59,22 @@ export default function Navbar() {
 
       <div className="navbar-right">
         {!standalone && (
-          <button type="button" className="nav-install-btn" onClick={openInstallGuide} title="Install App to Home Screen">
-            <FiDownload size={14} /> Install App
+          <button type="button" className="nav-install-btn" onClick={openInstallGuide} title="Install App to Home Screen" aria-label="Install App">
+            <FiDownload size={14} /> <span className="nav-install-label">Install App</span>
           </button>
         )}
 
-        <form onSubmit={handleSearch} className="nav-search">
+        <Link to="/search" className="nav-search-icon-btn" aria-label="Search">
+          <FiSearch size={20} />
+        </Link>
+
+        <form onSubmit={handleSearch} className={`nav-search ${onSearchPage ? 'is-hidden' : ''}`}>
           <FiSearch size={16} />
           <input
             type="text"
             placeholder="Movies, TV shows..."
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={handleChange}
           />
         </form>
       </div>

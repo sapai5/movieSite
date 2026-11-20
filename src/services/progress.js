@@ -1,4 +1,41 @@
 const PROGRESS_KEY = 'movieplayer_playback_progress';
+const DISMISSED_KEY = 'movieplayer_continue_dismissed';
+
+function getDismissed() {
+  try {
+    const raw = localStorage.getItem(DISMISSED_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+// Hide a movie/show from Continue Watching without losing saved positions.
+// It reappears automatically if you watch it again later.
+export function dismissFromContinueWatching(id, type = 'movie') {
+  const dismissed = getDismissed();
+  dismissed[`${type}_${id}`] = new Date().toISOString();
+  try {
+    localStorage.setItem(DISMISSED_KEY, JSON.stringify(dismissed));
+  } catch (e) {
+    console.warn(e);
+  }
+}
+
+// Mark the given movie/episode as finished and hide it from the row.
+export function markAsWatched(id, type = 'movie', season = 1, episode = 1) {
+  const map = getAllProgress();
+  const key = getProgressKey(id, type, season, episode);
+  if (map[key]) {
+    map[key] = { ...map[key], finished: true, progressPercent: 100 };
+    try {
+      localStorage.setItem(PROGRESS_KEY, JSON.stringify(map));
+    } catch (e) {
+      console.warn(e);
+    }
+  }
+  dismissFromContinueWatching(id, type);
+}
 
 export function getProgressKey(id, type, season = 1, episode = 1) {
   return type === 'tv' ? `tv_${id}_s${season}_e${episode}` : `movie_${id}`;
@@ -75,7 +112,13 @@ export function removePlaybackPosition(id, type = 'movie', season = 1, episode =
 
 export function getContinueWatchingList() {
   const map = getAllProgress();
-  const items = Object.values(map).filter(item => !item.finished && item.currentTime > 20);
+  const dismissed = getDismissed();
+  const items = Object.values(map).filter(item => {
+    if (item.finished || item.currentTime <= 20) return false;
+    const hiddenAt = dismissed[`${item.type}_${item.id}`];
+    // Hidden unless watched again after it was dismissed
+    return !hiddenAt || new Date(item.lastWatched) > new Date(hiddenAt);
+  });
 
   // Group by show/movie ID to only show latest episode for TV shows
   const grouped = new Map();

@@ -1,7 +1,7 @@
 import { FiPlay, FiInfo } from 'react-icons/fi'
 import { FaStar } from 'react-icons/fa'
 import { useNavigate } from 'react-router-dom'
-import { getBackdropUrl } from '../services/tmdb'
+import { getBackdropUrl, getImageUrl } from '../services/tmdb'
 import { recordInteraction } from '../services/history'
 
 export default function Hero({ movie, onInfo }) {
@@ -13,6 +13,10 @@ export default function Hero({ movie, onInfo }) {
   const year = dateStr ? new Date(dateStr).getFullYear() : ''
   const rating = movie.vote_average ? movie.vote_average.toFixed(1) : 'N/A'
   const isTV = movie.media_type === 'tv' || Boolean(movie.first_air_date && !movie.release_date)
+
+  const backdrop = getBackdropUrl(movie.backdrop_path)
+  // Portrait poster for phones; fall back to the backdrop if there's no poster
+  const poster = movie.poster_path ? getImageUrl(movie.poster_path, 'w780') : backdrop
 
   const handlePlay = () => {
     recordInteraction(movie)
@@ -32,7 +36,8 @@ export default function Hero({ movie, onInfo }) {
     <section
       className="hero"
       style={{
-        backgroundImage: `url(${getBackdropUrl(movie.backdrop_path)})`,
+        '--hero-backdrop': backdrop ? `url(${backdrop})` : 'none',
+        '--hero-poster': poster ? `url(${poster})` : 'none',
       }}
     >
       <div className="hero-content">

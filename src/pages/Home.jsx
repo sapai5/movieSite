@@ -93,7 +93,7 @@ export default function Home() {
       <Hero movie={hero} onInfo={setSelected} />
 
       {/* 1. Continue Watching (Saved Positions) */}
-      <ContinueWatchingRow />
+      <ContinueWatchingRow onInfo={setSelected} />
 
       {/* 2. Personalized "What You Might Like" (Trained by clicks/views) */}
       {personalized.movies && personalized.movies.length > 0 && (
