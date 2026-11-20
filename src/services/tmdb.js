@@ -64,6 +64,10 @@ export async function getMovieDetails(id) {
   return fetchTMDB(`/movie/${id}`, { append_to_response: 'credits,similar,videos' })
 }
 
+export async function getMovieRecommendations(id) {
+  return fetchTMDB(`/movie/${id}/recommendations`)
+}
+
 // TV Shows
 export async function getTrendingTV() {
   return fetchTMDB('/trending/tv/week')
@@ -95,6 +99,38 @@ export async function getTVDetails(id) {
 
 export async function getTVSeasonDetails(tvId, seasonNumber) {
   return fetchTMDB(`/tv/${tvId}/season/${seasonNumber}`)
+}
+
+export async function getTVRecommendations(id) {
+  return fetchTMDB(`/tv/${id}/recommendations`)
+}
+
+// Global & International Trending
+export async function getDailyGlobalTrending() {
+  return fetchTMDB('/trending/all/day')
+}
+
+export async function getInternationalTrending(language = 'ko', page = 1) {
+  if (language === 'all') {
+    return fetchTMDB('/discover/movie', {
+      sort_by: 'popularity.desc',
+      'vote_count.gte': 100,
+      page,
+    })
+  }
+  return fetchTMDB('/discover/movie', {
+    with_original_language: language,
+    sort_by: 'popularity.desc',
+    page,
+  })
+}
+
+export async function getInternationalTV(language = 'ko', page = 1) {
+  return fetchTMDB('/discover/tv', {
+    with_original_language: language,
+    sort_by: 'popularity.desc',
+    page,
+  })
 }
 
 // Multi Search (Movies & TV)

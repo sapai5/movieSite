@@ -2,6 +2,7 @@ import { FiPlay, FiInfo } from 'react-icons/fi'
 import { FaStar } from 'react-icons/fa'
 import { useNavigate } from 'react-router-dom'
 import { getBackdropUrl } from '../services/tmdb'
+import { recordInteraction } from '../services/history'
 
 export default function Hero({ movie, onInfo }) {
   const navigate = useNavigate()
@@ -14,11 +15,17 @@ export default function Hero({ movie, onInfo }) {
   const isTV = movie.media_type === 'tv' || Boolean(movie.first_air_date && !movie.release_date)
 
   const handlePlay = () => {
+    recordInteraction(movie)
     if (isTV) {
       navigate(`/watch/tv/${movie.id}/1/1`)
     } else {
       navigate(`/watch/movie/${movie.id}`)
     }
+  }
+
+  const handleInfo = () => {
+    recordInteraction(movie)
+    onInfo(movie)
   }
 
   return (
@@ -40,7 +47,7 @@ export default function Hero({ movie, onInfo }) {
           <button className="btn btn-play" onClick={handlePlay}>
             <FiPlay /> {isTV ? 'Play S1:E1' : 'Play'}
           </button>
-          <button className="btn btn-info" onClick={() => onInfo(movie)}>
+          <button className="btn btn-info" onClick={handleInfo}>
             <FiInfo /> More Info
           </button>
         </div>

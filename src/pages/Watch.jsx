@@ -1,8 +1,21 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { FiArrowLeft, FiVolume2, FiGlobe, FiTv, FiSliders, FiChevronLeft, FiChevronRight, FiPlay } from 'react-icons/fi'
+import {
+  FiArrowLeft,
+  FiVolume2,
+  FiGlobe,
+  FiTv,
+  FiSliders,
+  FiChevronLeft,
+  FiChevronRight,
+  FiPlay,
+  FiRotateCcw,
+  FiClock,
+  FiBookmark,
+} from 'react-icons/fi'
 import { FaStar } from 'react-icons/fa'
 import { getMovieDetails, getTVDetails, getTVSeasonDetails, getStillUrl } from '../services/tmdb'
+import { getPlaybackPosition, savePlaybackPosition, formatTime } from '../services/progress'
 
 const SERVERS = [
   {
@@ -30,7 +43,6 @@ export default function Watch() {
   const navigate = useNavigate()
   const iframeRef = useRef(null)
 
-  // Support both /watch/:id (defaults to movie) and /watch/:type/:id/:season?/:episode?
   const isTVRoute = params.type === 'tv'
   const mediaId = params.id
   const currentSeason = params.season ? Number(params.season) : 1
@@ -43,12 +55,24 @@ export default function Watch() {
   const [selectedQuality, setSelectedQuality] = useState('1080p')
   const [selectedServer, setSelectedServer] = useState(SERVERS[0].id)
 
+  // Playback Progress & Resume state
+  const [resumePrompt, setResumePrompt] = useState(null)
+  const [currentSeconds, setCurrentSeconds] = useState(0)
+  const [estimatedDuration, setEstimatedDuration] = useState(5400) // 90 mins default
+  const [isPlaying, setIsPlaying] = useState(true)
+  const secondsRef = useRef(0)
+  const durationRef = useRef(5400)
+
+  // 1. Fetch metadata
   useEffect(() => {
     setLoading(true)
     const fetchFn = isTVRoute ? getTVDetails : getMovieDetails
     fetchFn(mediaId)
       .then((data) => {
         setDetails(data)
+        const dur = (data.runtime ? data.runtime * 60 : 5400)
+        setEstimatedDuration(dur)
+        durationRef.current = dur
         setLoading(false)
       })
       .catch((err) => {
@@ -57,14 +81,111 @@ export default function Watch() {
       })
   }, [mediaId, isTVRoute])
 
-  // If TV show, load current season's episodes
+  // 2. Fetch TV season if applicable
   useEffect(() => {
     if (isTVRoute && mediaId) {
       getTVSeasonDetails(mediaId, currentSeason)
-        .then(setSeasonData)
+        .then((data) => {
+          setSeasonData(data)
+          const ep = data?.episodes?.find((e) => e.episode_number === currentEpisode)
+          if (ep?.runtime) {
+            const epDur = ep.runtime * 60
+            setEstimatedDuration(epDur)
+            durationRef.current = epDur
+          }
+        })
         .catch(console.error)
     }
-  }, [isTVRoute, mediaId, currentSeason])
+  }, [isTVRoute, mediaId, currentSeason, currentEpisode])
+
+  // 3. Check for saved playback position on mount or episode change
+  useEffect(() => {
+    const saved = getPlaybackPosition(mediaId, isTVRoute ? 'tv' : 'movie', currentSeason, currentEpisode)
+    if (saved && saved.currentTime > 20 && !saved.finished) {
+      setResumePrompt({
+        time: saved.currentTime,
+        formatted: formatTime(saved.currentTime)
+      })
+      setCurrentSeconds(saved.currentTime)
+      secondsRef.current = saved.currentTime
+    } else {
+      setResumePrompt(null)
+      setCurrentSeconds(0)
+      secondsRef.current = 0
+    }
+  }, [mediaId, isTVRoute, currentSeason, currentEpisode])
+
+  // Helper to persist current position
+  const persistProgress = useCallback((sec) => {
+    if (!details || sec <= 10) return
+    const title = details.title || details.name || 'Untitled'
+    const epData = seasonData?.episodes?.find((e) => e.episode_number === currentEpisode)
+
+    savePlaybackPosition({
+      id: mediaId,
+      type: isTVRoute ? 'tv' : 'movie',
+      title,
+      poster_path: details.poster_path,
+      backdrop_path: details.backdrop_path,
+      currentTime: sec,
+      duration: durationRef.current,
+      season: currentSeason,
+      episode: currentEpisode,
+      episodeName: epData?.name || `Episode ${currentEpisode}`
+    })
+  }, [details, mediaId, isTVRoute, currentSeason, currentEpisode, seasonData])
+
+  // 4. Listen to postMessage events from iframe
+  useEffect(() => {
+    const handleMessage = (e) => {
+      const data = e.data
+      if (!data) return
+
+      // Handle VidRift / player time events
+      if (
+        data.type === 'vidrift:timeupdate' ||
+        data.type === 'vidrift:progress' ||
+        data.type === 'timeupdate' ||
+        data.event === 'timeupdate'
+      ) {
+        const time = data.currentTime || data.time || data.seconds
+        const dur = data.duration || data.total
+        if (typeof time === 'number' && time > 0) {
+          secondsRef.current = Math.floor(time)
+          setCurrentSeconds(Math.floor(time))
+        }
+        if (typeof dur === 'number' && dur > 0) {
+          durationRef.current = Math.floor(dur)
+          setEstimatedDuration(Math.floor(dur))
+        }
+      }
+
+      if (data.type === 'vidrift:play' || data.event === 'play') {
+        setIsPlaying(true)
+      } else if (data.type === 'vidrift:pause' || data.event === 'pause') {
+        setIsPlaying(false)
+      }
+    }
+
+    window.addEventListener('message', handleMessage)
+    return () => window.removeEventListener('message', handleMessage)
+  }, [])
+
+  // 5. Automatic Heartbeat Progress Saver (tracks elapsed time and auto-saves)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (isPlaying && secondsRef.current < durationRef.current) {
+        secondsRef.current += 3
+        setCurrentSeconds(secondsRef.current)
+        persistProgress(secondsRef.current)
+      }
+    }, 3000)
+
+    return () => {
+      clearInterval(interval)
+      persistProgress(secondsRef.current)
+    }
+  }, [isPlaying, persistProgress])
 
   // Dispatch quality override to VidRift iframe via postMessage
   const applyQuality = useCallback((quality) => {
@@ -96,12 +217,53 @@ export default function Watch() {
     }
   }
 
+  // Handle Resume action
+  const handleResumePlayback = () => {
+    if (resumePrompt?.time && iframeRef.current?.contentWindow) {
+      try {
+        iframeRef.current.contentWindow.postMessage(
+          { type: 'vidrift:seek', time: resumePrompt.time },
+          '*'
+        )
+      } catch (err) {
+        console.warn('Seek postMessage failed', err)
+      }
+    }
+    setResumePrompt(null)
+  }
+
+  const handleRestartPlayback = () => {
+    secondsRef.current = 0
+    setCurrentSeconds(0)
+    persistProgress(0)
+    if (iframeRef.current?.contentWindow) {
+      try {
+        iframeRef.current.contentWindow.postMessage({ type: 'vidrift:seek', time: 0 }, '*')
+      } catch {}
+    }
+    setResumePrompt(null)
+  }
+
+  // Manual Seek Helper
+  const handleManualSeek = (delta) => {
+    const next = Math.max(0, Math.min(durationRef.current, secondsRef.current + delta))
+    secondsRef.current = next
+    setCurrentSeconds(next)
+    persistProgress(next)
+    if (iframeRef.current?.contentWindow) {
+      try {
+        iframeRef.current.contentWindow.postMessage({ type: 'vidrift:seek', time: next }, '*')
+      } catch {}
+    }
+  }
+
   // Episode navigation helpers
   const totalEpisodesInSeason = seasonData?.episodes?.length || 0
   const hasNextEp = currentEpisode < totalEpisodesInSeason
   const hasPrevEp = currentEpisode > 1
 
   const goToEpisode = (s, e) => {
+    persistProgress(secondsRef.current)
     navigate(`/watch/tv/${mediaId}/${s}/${e}`)
   }
 
@@ -131,12 +293,12 @@ export default function Watch() {
       <header className="watch-top-bar">
         <div className="watch-top-left">
           <Link to="/" className="watch-brand-link">MOVIEPLAYER</Link>
-          <button className="back-btn" onClick={() => navigate(-1)}>
+          <button className="back-btn" onClick={() => { persistProgress(secondsRef.current); navigate(-1) }}>
             <FiArrowLeft /> Back
           </button>
         </div>
 
-        {/* TV Quick Navigation (Season & Episode Switcher) */}
+        {/* TV Quick Navigation */}
         {isTVRoute && seasons.length > 0 && (
           <div className="tv-nav-bar">
             <select
@@ -226,8 +388,26 @@ export default function Watch() {
         </div>
       </header>
 
-      {/* Main Video Player */}
+      {/* Main Video Player Container */}
       <div className="player-container">
+        {/* Resume Banner Prompt */}
+        {resumePrompt && (
+          <div className="resume-floating-banner">
+            <div className="resume-banner-text">
+              <FiClock size={18} />
+              <span>Resume playback from <strong>{resumePrompt.formatted}</strong>?</span>
+            </div>
+            <div className="resume-banner-actions">
+              <button className="btn-resume-confirm" onClick={handleResumePlayback}>
+                <FiPlay size={14} /> Resume ({resumePrompt.formatted})
+              </button>
+              <button className="btn-resume-restart" onClick={handleRestartPlayback}>
+                <FiRotateCcw size={14} /> Start Over
+              </button>
+            </div>
+          </div>
+        )}
+
         <iframe
           ref={iframeRef}
           key={`${playerSrc}-${selectedServer}`}
@@ -238,6 +418,33 @@ export default function Watch() {
           referrerPolicy="origin"
           title={title}
         />
+      </div>
+
+      {/* Position Scrubber & Sync Bar */}
+      <div className="watch-progress-bar-strip">
+        <div className="progress-info-left">
+          <FiBookmark size={15} color="#e50914" />
+          <span className="progress-label">Saved Position:</span>
+          <span className="progress-time-display">{formatTime(currentSeconds)}</span>
+          <span className="progress-total-display">/ {formatTime(estimatedDuration)}</span>
+        </div>
+        <div className="progress-quick-skips">
+          <button className="btn-skip" onClick={() => handleManualSeek(-60)} title="Jump backward 1 min">
+            -1m
+          </button>
+          <button className="btn-skip" onClick={() => handleManualSeek(-15)} title="Jump backward 15s">
+            -15s
+          </button>
+          <button className="btn-skip" onClick={() => handleManualSeek(15)} title="Jump forward 15s">
+            +15s
+          </button>
+          <button className="btn-skip" onClick={() => handleManualSeek(60)} title="Jump forward 1 min">
+            +1m
+          </button>
+          <button className="btn-save-mark" onClick={() => persistProgress(secondsRef.current)}>
+            Bookmark Place
+          </button>
+        </div>
       </div>
 
       {/* Details & Episode List */}

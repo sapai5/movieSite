@@ -2,6 +2,7 @@ import { FiPlay, FiInfo } from 'react-icons/fi'
 import { FaStar } from 'react-icons/fa'
 import { useNavigate } from 'react-router-dom'
 import { getImageUrl } from '../services/tmdb'
+import { recordInteraction } from '../services/history'
 
 export default function MovieCard({ movie, onClick }) {
   const navigate = useNavigate()
@@ -11,8 +12,14 @@ export default function MovieCard({ movie, onClick }) {
   const rating = movie.vote_average ? movie.vote_average.toFixed(1) : ''
   const isTV = movie.media_type === 'tv' || Boolean(movie.first_air_date && !movie.release_date)
 
+  const handleCardClick = () => {
+    recordInteraction(movie)
+    onClick && onClick()
+  }
+
   const handlePlayDirect = (e) => {
     e.stopPropagation()
+    recordInteraction(movie)
     if (isTV) {
       navigate(`/watch/tv/${movie.id}/1/1`)
     } else {
@@ -21,7 +28,7 @@ export default function MovieCard({ movie, onClick }) {
   }
 
   return (
-    <div className="movie-card" onClick={onClick}>
+    <div className="movie-card" onClick={handleCardClick}>
       <div className="movie-card-media">
         <img
           className="movie-card-img"
@@ -40,7 +47,7 @@ export default function MovieCard({ movie, onClick }) {
             </button>
             <button
               className="quick-action-btn info"
-              onClick={onClick}
+              onClick={handleCardClick}
               title="More info"
             >
               <FiInfo />
