@@ -17,24 +17,35 @@ import { FaStar } from 'react-icons/fa'
 import { getMovieDetails, getTVDetails, getTVSeasonDetails, getStillUrl } from '../services/tmdb'
 import { getPlaybackPosition, savePlaybackPosition, formatTime } from '../services/progress'
 
+// sandbox: the iframe sandbox for each server, or null for none.
+// - VidLink shows "Please Disable Sandbox" inside any sandbox, so it runs without one.
+// - VidRift plays sandboxed (which stops it redirecting this page), but only if
+//   allow-popups is on: it probes window.open() on the first click.
+// seek: 'message' = accepts a postMessage seek, 'url' = only via ?startAt= (reload).
+const SANDBOX_BASE = 'allow-scripts allow-same-origin allow-forms allow-presentation allow-orientation-lock allow-pointer-lock'
+const VIDLINK_OPTS = 'primaryColor=e50914&secondaryColor=a2a2a2&iconColor=ffffff&autoplay=true&nextbutton=true'
+const withStart = (url, start) => (start > 0 ? `${url}&startAt=${Math.floor(start)}` : url)
+// When VidLink has no stream for a title it navigates its frame to fallback_url.
+// We point that at our own page so the Watch page can spot it and switch servers.
+const MISSING_PAGE = '/vidlink-missing.html'
+const vidlinkFallback = () => `&fallback_url=${encodeURIComponent(window.location.origin + MISSING_PAGE)}`
+
 const SERVERS = [
   {
+    id: 'vidlink',
+    name: 'VidLink (Primary)',
+    sandbox: null,
+    seek: 'url',
+    getMovieUrl: (id, dub, start) => withStart(`https://vidlink.pro/movie/${id}?${VIDLINK_OPTS}${vidlinkFallback()}`, start),
+    getTvUrl: (id, s, e, dub, start) => withStart(`https://vidlink.pro/tv/${id}/${s}/${e}?${VIDLINK_OPTS}${vidlinkFallback()}`, start),
+  },
+  {
     id: 'vidrift',
-    name: 'VidRift (Primary)',
+    name: 'VidRift (Backup)',
+    sandbox: `${SANDBOX_BASE} allow-popups`,
+    seek: 'message',
     getMovieUrl: (id, dub) => `https://embed.vidrift.net/embed/movie/${id}?dub=${dub ? '1' : '0'}`,
     getTvUrl: (id, s, e, dub) => `https://embed.vidrift.net/embed/tv/${id}/${s}/${e}?dub=${dub ? '1' : '0'}`,
-  },
-  {
-    id: 'vidsrc',
-    name: 'VidSrc (1080p Alt)',
-    getMovieUrl: (id) => `https://vidsrc.cc/v2/embed/movie/${id}`,
-    getTvUrl: (id, s, e) => `https://vidsrc.cc/v2/embed/tv/${id}/${s}/${e}`,
-  },
-  {
-    id: 'autoembed',
-    name: 'AutoEmbed (Multi-Source)',
-    getMovieUrl: (id) => `https://player.autoembed.cc/embed/movie/${id}`,
-    getTvUrl: (id, s, e) => `https://player.autoembed.cc/embed/tv/${id}/${s}/${e}`,
   },
 ]
 
@@ -59,7 +70,9 @@ export default function Watch() {
   const [resumePrompt, setResumePrompt] = useState(null)
   const [currentSeconds, setCurrentSeconds] = useState(0)
   const [estimatedDuration, setEstimatedDuration] = useState(5400) // 90 mins default
-  const [isPlaying, setIsPlaying] = useState(true)
+  // Only true once the player says it is playing; guessing "playing" saved fake progress
+  const [isPlaying, setIsPlaying] = useState(false)
+  const lastRealTimeAtRef = useRef(0)
   const secondsRef = useRef(0)
   const durationRef = useRef(5400)
 
@@ -72,7 +85,19 @@ export default function Watch() {
   const frameCreatedAtRef = useRef(Date.now())
   const restoreTimesRef = useRef([])
   const seekAfterRestoreRef = useRef(0)
-  const [adBlockedNotice, setAdBlockedNotice] = useState(false)
+  const [notice, setNotice] = useState('')
+  const noticeTimerRef = useRef(null)
+  const showNotice = useCallback((text, ms = 3000) => {
+    clearTimeout(noticeTimerRef.current)
+    setNotice(text)
+    noticeTimerRef.current = setTimeout(() => setNotice(''), ms)
+  }, [])
+  // True when we moved off VidLink automatically, so the next title tries VidLink again
+  const autoSwitchedRef = useRef(false)
+
+  // Servers without a seek message (VidLink) start at this time; changing it reloads the player
+  const [startAt, setStartAt] = useState(0)
+  const urlSeekTimerRef = useRef(null)
 
   // 1. Fetch metadata
   useEffect(() => {
@@ -111,6 +136,11 @@ export default function Watch() {
 
   // 3. Check for saved playback position on mount or episode change
   useEffect(() => {
+    setStartAt(0)
+    if (autoSwitchedRef.current) {
+      autoSwitchedRef.current = false
+      setSelectedServer(SERVERS[0].id)
+    }
     const saved = getPlaybackPosition(mediaId, isTVRoute ? 'tv' : 'movie', currentSeason, currentEpisode)
     if (saved && saved.currentTime > 20 && !saved.finished) {
       setResumePrompt({
@@ -149,8 +179,14 @@ export default function Watch() {
   // 4. Listen to postMessage events from iframe
   useEffect(() => {
     const handleMessage = (e) => {
-      const data = e.data
+      let data = e.data
       if (!data) return
+
+      // VidLink: { type: 'PLAYER_EVENT', data: { event, currentTime, duration } }
+      if (data.type === 'PLAYER_EVENT' && data.data && e.origin === 'https://vidlink.pro') {
+        const { event, currentTime, duration } = data.data
+        data = { event, currentTime, duration }
+      }
 
       // Handle VidRift / player time events
       if (
@@ -164,6 +200,8 @@ export default function Watch() {
         if (typeof time === 'number' && time > 0) {
           secondsRef.current = Math.floor(time)
           setCurrentSeconds(Math.floor(time))
+          lastRealTimeAtRef.current = Date.now()
+          setIsPlaying(true)
         }
         if (typeof dur === 'number' && dur > 0) {
           durationRef.current = Math.floor(dur)
@@ -185,7 +223,14 @@ export default function Watch() {
   // 5. Automatic Heartbeat Progress Saver (tracks elapsed time and auto-saves)
   useEffect(() => {
     const interval = setInterval(() => {
-      if (isPlaying && secondsRef.current < durationRef.current) {
+      if (!isPlaying) return
+      // The player is reporting real times: just save them
+      if (Date.now() - lastRealTimeAtRef.current < 10000) {
+        persistProgress(secondsRef.current)
+        return
+      }
+      // Player said "play" but sends no times: estimate
+      if (secondsRef.current < durationRef.current) {
         secondsRef.current += 3
         setCurrentSeconds(secondsRef.current)
         persistProgress(secondsRef.current)
@@ -220,7 +265,46 @@ export default function Watch() {
     applyQuality(q)
   }
 
+  const currentServerObj = SERVERS.find((s) => s.id === selectedServer) || SERVERS[0]
+
+  // Jump the player to a time: by message where supported, otherwise reload at ?startAt=
+  const seekPlayer = useCallback((time, { debounce = false } = {}) => {
+    if (currentServerObj.seek === 'message') {
+      try {
+        iframeRef.current?.contentWindow?.postMessage({ type: 'vidrift:seek', time }, '*')
+      } catch { /* ignore */ }
+      return
+    }
+    clearTimeout(urlSeekTimerRef.current)
+    const reload = () => {
+      setStartAt(time)
+      setPlayerNonce((n) => n + 1)
+    }
+    if (debounce) urlSeekTimerRef.current = setTimeout(reload, 700)
+    else reload()
+  }, [currentServerObj])
+
+  useEffect(() => () => {
+    clearTimeout(urlSeekTimerRef.current)
+    clearTimeout(noticeTimerRef.current)
+  }, [])
+
   const handleIframeLoad = () => {
+    // VidLink had nothing for this title and opened our fallback page
+    // (same-origin, so its location is readable). Switch to the backup server.
+    let framePath = ''
+    try { framePath = iframeRef.current?.contentWindow?.location?.pathname || '' } catch { /* cross-origin */ }
+    if (framePath === MISSING_PAGE) {
+      const backup = SERVERS.find((s) => s.id !== selectedServer)
+      if (backup) {
+        autoSwitchedRef.current = true
+        setStartAt(secondsRef.current)
+        setSelectedServer(backup.id)
+        showNotice(`Not available on ${currentServerObj.name.split(' ')[0]}, switched to ${backup.name.split(' ')[0]}`, 4000)
+      }
+      return
+    }
+
     frameLoadsRef.current += 1
     const sinceCreated = Date.now() - frameCreatedAtRef.current
 
@@ -235,8 +319,11 @@ export default function Watch() {
         seekAfterRestoreRef.current = secondsRef.current
         persistProgress(secondsRef.current)
         setResumePrompt(null)
-        setAdBlockedNotice(true)
-        setTimeout(() => setAdBlockedNotice(false), 3000)
+        showNotice('Blocked an ad, restoring your player…')
+        if (currentServerObj.seek === 'url') {
+          seekAfterRestoreRef.current = 0
+          setStartAt(secondsRef.current)
+        }
         setPlayerNonce((n) => n + 1)
         return
       }
@@ -264,16 +351,7 @@ export default function Watch() {
 
   // Handle Resume action
   const handleResumePlayback = () => {
-    if (resumePrompt?.time && iframeRef.current?.contentWindow) {
-      try {
-        iframeRef.current.contentWindow.postMessage(
-          { type: 'vidrift:seek', time: resumePrompt.time },
-          '*'
-        )
-      } catch (err) {
-        console.warn('Seek postMessage failed', err)
-      }
-    }
+    if (resumePrompt?.time) seekPlayer(resumePrompt.time)
     setResumePrompt(null)
   }
 
@@ -281,11 +359,7 @@ export default function Watch() {
     secondsRef.current = 0
     setCurrentSeconds(0)
     persistProgress(0)
-    if (iframeRef.current?.contentWindow) {
-      try {
-        iframeRef.current.contentWindow.postMessage({ type: 'vidrift:seek', time: 0 }, '*')
-      } catch {}
-    }
+    seekPlayer(0)
     setResumePrompt(null)
   }
 
@@ -295,11 +369,8 @@ export default function Watch() {
     secondsRef.current = next
     setCurrentSeconds(next)
     persistProgress(next)
-    if (iframeRef.current?.contentWindow) {
-      try {
-        iframeRef.current.contentWindow.postMessage({ type: 'vidrift:seek', time: next }, '*')
-      } catch {}
-    }
+    // Debounced so tapping +10s a few times reloads VidLink once
+    seekPlayer(next, { debounce: true })
   }
 
   // Episode navigation helpers
@@ -312,10 +383,9 @@ export default function Watch() {
     navigate(`/watch/tv/${mediaId}/${s}/${e}`)
   }
 
-  const currentServerObj = SERVERS.find((s) => s.id === selectedServer) || SERVERS[0]
   const playerSrc = isTVRoute
-    ? currentServerObj.getTvUrl(mediaId, currentSeason, currentEpisode, englishDefault)
-    : currentServerObj.getMovieUrl(mediaId, englishDefault)
+    ? currentServerObj.getTvUrl(mediaId, currentSeason, currentEpisode, englishDefault, startAt)
+    : currentServerObj.getMovieUrl(mediaId, englishDefault, startAt)
 
   const playerKey = `${playerSrc}-${selectedServer}-${playerNonce}`
   useEffect(() => {
@@ -389,7 +459,8 @@ export default function Watch() {
         )}
 
         <div className="watch-controls-group">
-          {/* Quality Selector */}
+          {/* Quality Selector (VidRift only; VidLink has its own in-player menu) */}
+          {selectedServer === 'vidrift' && (
           <div className="control-pill-group">
             <span className="control-label"><FiSliders size={13} /> Quality:</span>
             {['1080p', '4K', '720p', 'auto'].map((q) => (
@@ -402,6 +473,7 @@ export default function Watch() {
               </button>
             ))}
           </div>
+          )}
 
           {/* Audio Preference */}
           {selectedServer === 'vidrift' && (
@@ -430,7 +502,11 @@ export default function Watch() {
               <button
                 key={s.id}
                 className={`control-btn ${selectedServer === s.id ? 'active' : ''}`}
-                onClick={() => setSelectedServer(s.id)}
+                onClick={() => {
+                  if (s.id === selectedServer) return
+                  setStartAt(secondsRef.current)
+                  setSelectedServer(s.id)
+                }}
               >
                 {s.name.split(' ')[0]}
               </button>
@@ -459,9 +535,7 @@ export default function Watch() {
           </div>
         )}
 
-        {adBlockedNotice && (
-          <div className="ad-blocked-toast">Blocked an ad, restoring your player…</div>
-        )}
+        {notice && <div className="ad-blocked-toast">{notice}</div>}
 
         <iframe
           ref={iframeRef}
@@ -470,10 +544,8 @@ export default function Watch() {
           onLoad={handleIframeLoad}
           allowFullScreen
           allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
-          // Block the player from redirecting this page (no allow-top-navigation).
-          // allow-same-origin and allow-popups are required: VidRift refuses to
-          // play without them (it checks storage access and probes window.open).
-          sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-presentation allow-orientation-lock allow-pointer-lock"
+          // See SERVERS: VidLink refuses any sandbox, VidRift needs allow-popups
+          sandbox={currentServerObj.sandbox ?? undefined}
           referrerPolicy="origin"
           title={title}
         />
