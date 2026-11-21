@@ -45,7 +45,7 @@ export default function IOSInstallPrompt() {
     <div className="ios-pwa-banner" onClick={openInstallGuide}>
       <div className="ios-pwa-content">
         <div className="ios-pwa-icon-box">
-          {hasNative ? <FiDiownload size={22} color="#e50914" /> : <FiPlusSquare size={22} color="#e50914" />}
+          {hasNative ? <FiDownload size={22} color="#e50914" /> : <FiPlusSquare size={22} color="#e50914" />}
         </div>
         <div className="ios-pwa-text">
           <strong>{isIOS ? 'Install on your iPhone / iPad' : 'Install MoviePlayer App'}</strong>

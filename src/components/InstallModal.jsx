@@ -55,7 +55,7 @@ export default function InstallModal() {
           <div className="install-native-box">
             <p>Your browser is ready to install MoviePlayer as an app with 1 click:</p>
             <button className="install-primary-btn" onClick={handleInstallClick}>
-              <FiDiownload size={18} /> Install App Now
+              <FiDownload size={18} /> Install App Now
             </button>
           </div>
         ) : isIOS ? (

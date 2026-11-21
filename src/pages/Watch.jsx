@@ -209,9 +209,13 @@ export default function Watch() {
         }
       }
 
-      if (data.type === 'vidrift:play' || data.event === 'play') {
+      // VidRift sends vidrift:unpaused / vidrift:paused; VidLink sends play / pause / ended
+      if (data.type === 'vidrift:unpaused' || data.type === 'vidrift:play' || data.event === 'play') {
         setIsPlaying(true)
-      } else if (data.type === 'vidrift:pause' || data.event === 'pause') {
+      } else if (
+        data.type === 'vidrift:paused' || data.type === 'vidrift:pause' || data.type === 'vidrift:ended' ||
+        data.event === 'pause' || data.event === 'ended'
+      ) {
         setIsPlaying(false)
       }
     }
