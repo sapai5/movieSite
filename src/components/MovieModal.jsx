@@ -91,17 +91,18 @@ export default function MovieModal({ movie, onClose }) {
               <span>{details.number_of_seasons} Season{details.number_of_seasons > 1 ? 's' : ''}</span>
             )}
           </div>
+          {/* Right under the title so it's visible without scrolling on laptop screens */}
+          <div className="modal-play-btn">
+            <button className="btn btn-play" onClick={handlePlayMain}>
+              <FiPlay /> {isTV ? `Play Season ${selectedSeason}` : 'Play Movie'}
+            </button>
+          </div>
           <div className="modal-genres">
             {genres.map((g) => (
               <span key={g.id} className="genre-tag">{g.name}</span>
             ))}
           </div>
           <p className="modal-overview">{d.overview}</p>
-          <div className="modal-play-btn">
-            <button className="btn btn-play" onClick={handlePlayMain}>
-              <FiPlay /> {isTV ? `Play Season ${selectedSeason}` : 'Play Movie'}
-            </button>
-          </div>
 
           {/* TV Episodes Section */}
           {isTV && seasons.length > 0 && (

@@ -727,8 +727,12 @@ a {
 }
 
 .modal-backdrop-img {
+  display: block;
   width: 100%;
   aspect-ratio: 16/9;
+  /* On short (laptop) screens a full 16:9 image filled the whole pop-up and
+     pushed the Play button out of view. Crop it instead. */
+  max-height: 42vh;
   object-fit: cover;
   border-radius: 8px 8px 0 0;
 }
@@ -775,7 +779,7 @@ a {
 }
 
 .modal-play-btn {
-  margin-bottom: 32px;
+  margin: 4px 0 20px;
 }
 
 .modal-section-title {
