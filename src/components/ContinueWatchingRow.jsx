@@ -85,7 +85,13 @@ export default function ContinueWatchingRow({ onInfo }) {
   useEffect(() => {
     loadItems()
     window.addEventListener('storage', loadItems)
-    return () => window.removeEventListener('storage', loadItems)
+    window.addEventListener('movieplayer_progress_updated', loadItems)
+    window.addEventListener('movieplayer_library_updated', loadItems)
+    return () => {
+      window.removeEventListener('storage', loadItems)
+      window.removeEventListener('movieplayer_progress_updated', loadItems)
+      window.removeEventListener('movieplayer_library_updated', loadItems)
+    }
   }, [])
 
   const handleResume = (item) => {

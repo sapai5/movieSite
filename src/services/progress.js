@@ -1,3 +1,4 @@
+import { getLibrary, libraryKey, setLibraryStatus } from './library.js';
 const PROGRESS_KEY = 'movieplayer_playback_progress';
 const DISMISSED_KEY = 'movieplayer_continue_dismissed';
 
@@ -27,6 +28,10 @@ export function markAsWatched(id, type = 'movie', season = 1, episode = 1) {
   const map = getAllProgress();
   const key = getProgressKey(id, type, season, episode);
   if (map[key]) {
+    // A finished episode does not imply that the entire TV show was watched.
+    if (type === 'movie') {
+      try { setLibraryStatus(map[key], 'watched'); } catch { /* progress can still be saved */ }
+    }
     map[key] = { ...map[key], finished: true, progressPercent: 100 };
     try {
       localStorage.setItem(PROGRESS_KEY, JSON.stringify(map));
@@ -88,6 +93,10 @@ export function savePlaybackPosition({
 
   try {
     localStorage.setItem(PROGRESS_KEY, JSON.stringify(map));
+    if (finished && type === 'movie' && getLibrary()[libraryKey(map[key])]?.status !== 'watched') {
+      try { setLibraryStatus(map[key], 'watched'); } catch { /* preserve playback even if library storage fails */ }
+    }
+    window.dispatchEvent(new Event('movieplayer_progress_updated'));
   } catch (e) {
     console.warn('Failed to save progress to localStorage', e);
   }
@@ -105,6 +114,7 @@ export function removePlaybackPosition(id, type = 'movie', season = 1, episode =
   delete map[key];
   try {
     localStorage.setItem(PROGRESS_KEY, JSON.stringify(map));
+    window.dispatchEvent(new Event('movieplayer_progress_updated'));
   } catch (e) {
     console.warn(e);
   }
@@ -113,7 +123,9 @@ export function removePlaybackPosition(id, type = 'movie', season = 1, episode =
 export function getContinueWatchingList() {
   const map = getAllProgress();
   const dismissed = getDismissed();
+  const library = getLibrary();
   const items = Object.values(map).filter(item => {
+    if (library[libraryKey(item)]?.status === 'watched') return false;
     if (item.finished || item.currentTime <= 20) return false;
     const hiddenAt = dismissed[`${item.type}_${item.id}`];
     // Hidden unless watched again after it was dismissed
@@ -133,6 +145,36 @@ export function getContinueWatchingList() {
   return Array.from(grouped.values()).sort(
     (a, b) => new Date(b.lastWatched) - new Date(a.lastWatched)
   );
+}
+
+// Clear every saved position for one movie or show (all episodes).
+export function removeTitleProgress(id, type = 'movie') {
+  const map = getAllProgress();
+  Object.keys(map).forEach((key) => {
+    if (map[key]?.type === type && String(map[key].id) === String(id)) delete map[key];
+  });
+  try {
+    localStorage.setItem(PROGRESS_KEY, JSON.stringify(map));
+    window.dispatchEvent(new Event('movieplayer_progress_updated'));
+  } catch (e) {
+    console.warn(e);
+  }
+}
+
+// Everything started but not finished, for the Library's "In progress" tab.
+// Unlike Continue Watching it ignores "hide from row", so nothing in progress is
+// ever out of reach. One entry per title (the most recent episode for shows).
+export function getInProgressList() {
+  const library = getLibrary();
+  const grouped = new Map();
+  Object.values(getAllProgress()).forEach((item) => {
+    if (!item?.id || item.finished || item.currentTime <= 20) return;
+    if (item.type === 'movie' && library[libraryKey(item)]?.status === 'watched') return;
+    const key = `${item.type}_${item.id}`;
+    const existing = grouped.get(key);
+    if (!existing || new Date(item.lastWatched) > new Date(existing.lastWatched)) grouped.set(key, item);
+  });
+  return Array.from(grouped.values()).sort((a, b) => new Date(b.lastWatched) - new Date(a.lastWatched));
 }
 
 export function formatTime(seconds) {

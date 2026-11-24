@@ -57,7 +57,7 @@ export default function MovieRow({ title, movies, onSelect }) {
 
         <div className="row-movies" ref={scrollRef}>
           {movies.map((movie) => (
-            <MovieCard key={movie.id} movie={movie} onClick={() => onSelect(movie)} />
+            <MovieCard key={`${movie.media_type || 'movie'}:${movie.id}`} movie={movie} onClick={() => onSelect(movie)} />
           ))}
         </div>
 

@@ -1,5 +1,5 @@
 import { NavLink, useLocation } from 'react-router-dom'
-import { FiHome, FiTv, FiFilm, FiSearch } from 'react-icons/fi'
+import { FiHome, FiTv, FiFilm, FiSearch, FiBookmark } from 'react-icons/fi'
 
 export default function MobileBottomNav() {
   const location = useLocation()
@@ -28,6 +28,9 @@ export default function MobileBottomNav() {
       <NavLink to="/search" className={({ isActive }) => `bottom-nav-item ${isActive ? 'active' : ''}`}>
         <FiSearch className="bottom-nav-icon" />
         <span className="bottom-nav-label">Search</span>
+      </NavLink>
+      <NavLink to="/library" className={({ isActive }) => `bottom-nav-item ${isActive ? 'active' : ''}`}>
+        <FiBookmark className="bottom-nav-icon" /><span className="bottom-nav-label">Library</span>
       </NavLink>
     </nav>
   )

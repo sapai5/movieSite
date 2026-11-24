@@ -3,6 +3,7 @@ import { FaStar } from 'react-icons/fa'
 import { useNavigate } from 'react-router-dom'
 import { getImageUrl } from '../services/tmdb'
 import { recordInteraction } from '../services/history'
+import LibraryActions from './LibraryActions'
 
 export default function MovieCard({ movie, onClick }) {
   const navigate = useNavigate()
@@ -36,6 +37,7 @@ export default function MovieCard({ movie, onClick }) {
           alt={title}
           loading="lazy"
         />
+        <div className="card-library-actions"><LibraryActions movie={movie} compact /></div>
         <div className="movie-card-overlay">
           <div className="movie-card-quick-actions">
             <button
@@ -47,7 +49,7 @@ export default function MovieCard({ movie, onClick }) {
             </button>
             <button
               className="quick-action-btn info"
-              onClick={handleCardClick}
+              onClick={(event) => { event.stopPropagation(); handleCardClick() }}
               title="More info"
             >
               <FiInfo />
@@ -67,6 +69,7 @@ export default function MovieCard({ movie, onClick }) {
           </div>
         </div>
       </div>
+      <button className="card-accessible-title" onClick={(event) => { event.stopPropagation(); handleCardClick() }}>{title}</button>
     </div>
   )
 }

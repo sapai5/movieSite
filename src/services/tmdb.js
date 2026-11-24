@@ -27,6 +27,13 @@ async function fetchTMDB(endpoint, params = {}) {
   return res.json()
 }
 
+export async function getStreamingTitles(provider, type, region) {
+  return fetchTMDB(`/discover/${type}`, {
+    with_watch_providers: provider, watch_region: region,
+    with_watch_monetization_types: 'flatrate', sort_by: 'popularity.desc',
+  })
+}
+
 // Movies
 export async function getTrending() {
   return fetchTMDB('/trending/movie/week')

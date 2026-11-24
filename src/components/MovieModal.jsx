@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { FiX, FiPlay } from 'react-icons/fi'
 import { FaStar } from 'react-icons/fa'
+import LibraryActions from './LibraryActions'
 import { getBackdropUrl, getImageUrl, getStillUrl, getMovieDetails, getTVDetails, getTVSeasonDetails } from '../services/tmdb'
 
 export default function MovieModal({ movie, onClose }) {
@@ -102,6 +103,7 @@ export default function MovieModal({ movie, onClose }) {
               <span key={g.id} className="genre-tag">{g.name}</span>
             ))}
           </div>
+          <LibraryActions movie={{ ...d, media_type: isTV ? 'tv' : 'movie' }} />
           <p className="modal-overview">{d.overview}</p>
 
           {/* TV Episodes Section */}

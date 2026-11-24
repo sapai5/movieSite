@@ -1,28 +1,30 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import {
-  FiArrowLeft,
-  FiVolume2,
-  FiGlobe,
-  FiTv,
-  FiSliders,
+  FiSettings,
   FiChevronLeft,
   FiChevronRight,
   FiPlay,
   FiRotateCcw,
   FiClock,
-  FiBookmark,
+  FiMaximize2,
+  FiX,
+  FiShield,
 } from 'react-icons/fi'
 import { FaStar } from 'react-icons/fa'
 import { getMovieDetails, getTVDetails, getTVSeasonDetails, getStillUrl } from '../services/tmdb'
 import { getPlaybackPosition, savePlaybackPosition, formatTime } from '../services/progress'
+import LibraryActions from '../components/LibraryActions'
+import ProtectionPanel from '../components/ProtectionPanel'
+import PlayerSettings from '../components/PlayerSettings'
+import { playerSandbox, playerMessage, PLAYER_PERMISSIONS } from '../services/protection'
 
-// sandbox: the iframe sandbox for each server, or null for none.
-// - VidLink shows "Please Disable Sandbox" inside any sandbox, so it runs without one.
-// - VidRift plays sandboxed (which stops it redirecting this page), but only if
-//   allow-popups is on: it probes window.open() on the first click.
+// Sandboxing lives in services/protection.js. Every playback starts in Strict
+// mode (no popups, top navigation, downloads, forms or modals). Compatibility is
+// an explicit per-playback opt-out chosen in the Protection panel:
+// - VidLink shows "Please Disable Sandbox" inside any sandbox, so compatibility removes it.
+// - VidRift probes window.open() on the first click, so compatibility adds allow-popups.
 // seek: 'message' = accepts a postMessage seek, 'url' = only via ?startAt= (reload).
-const SANDBOX_BASE = 'allow-scripts allow-same-origin allow-forms allow-presentation allow-orientation-lock allow-pointer-lock'
 const VIDLINK_OPTS = 'primaryColor=e50914&secondaryColor=a2a2a2&iconColor=ffffff&autoplay=true&nextbutton=true'
 const withStart = (url, start) => (start > 0 ? `${url}&startAt=${Math.floor(start)}` : url)
 // When VidLink has no stream for a title it navigates its frame to fallback_url.
@@ -30,27 +32,33 @@ const withStart = (url, start) => (start > 0 ? `${url}&startAt=${Math.floor(star
 const MISSING_PAGE = '/vidlink-missing.html'
 const vidlinkFallback = () => `&fallback_url=${encodeURIComponent(window.location.origin + MISSING_PAGE)}`
 
+// The first server is the default. VidRift plays under Strict protection.
+// There is no manual server picker: VidLink is offered only when VidRift reports
+// that every source failed, and since it refuses any sandbox, accepting that
+// offer is the viewer's explicit choice of Compatibility for that playback.
+// VidRift source ids for anime: English dub and the original audio with subtitles.
+const SUBTITLE_AUTO_KEY = 'movieplayer_subtitle_auto_size'
+const DUB_SOURCE = 'animedub'
+const SUB_SOURCE = 'anime'
+
 const SERVERS = [
   {
-    id: 'vidlink',
-    name: 'VidLink (Primary)',
-    sandbox: null,
-    seek: 'url',
-    getMovieUrl: (id, dub, start) => withStart(`https://vidlink.pro/movie/${id}?${VIDLINK_OPTS}${vidlinkFallback()}`, start),
-    getTvUrl: (id, s, e, dub, start) => withStart(`https://vidlink.pro/tv/${id}/${s}/${e}?${VIDLINK_OPTS}${vidlinkFallback()}`, start),
-  },
-  {
     id: 'vidrift',
-    name: 'VidRift (Backup)',
-    sandbox: `${SANDBOX_BASE} allow-popups`,
+    name: 'VidRift (Primary)',
     seek: 'message',
     getMovieUrl: (id, dub) => `https://embed.vidrift.net/embed/movie/${id}?dub=${dub ? '1' : '0'}`,
     getTvUrl: (id, s, e, dub) => `https://embed.vidrift.net/embed/tv/${id}/${s}/${e}?dub=${dub ? '1' : '0'}`,
   },
+  {
+    id: 'vidlink',
+    name: 'VidLink (Backup)',
+    seek: 'url',
+    getMovieUrl: (id, dub, start) => withStart(`https://vidlink.pro/movie/${id}?${VIDLINK_OPTS}${vidlinkFallback()}`, start),
+    getTvUrl: (id, s, e, dub, start) => withStart(`https://vidlink.pro/tv/${id}/${s}/${e}?${VIDLINK_OPTS}${vidlinkFallback()}`, start),
+  },
 ]
 
-export default function Watch() {
-  const params = useParams()
+export default function Watch({ params, docked, onExpand, onClose }) {
   const navigate = useNavigate()
   const iframeRef = useRef(null)
 
@@ -60,16 +68,14 @@ export default function Watch() {
   const currentEpisode = params.episode ? Number(params.episode) : 1
 
   const [details, setDetails] = useState(null)
+  const [detailsError, setDetailsError] = useState(false)
   const [seasonData, setSeasonData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [englishDefault, setEnglishDefault] = useState(true)
-  const [selectedQuality, setSelectedQuality] = useState('1080p')
   const [selectedServer, setSelectedServer] = useState(SERVERS[0].id)
 
   // Playback Progress & Resume state
   const [resumePrompt, setResumePrompt] = useState(null)
-  const [currentSeconds, setCurrentSeconds] = useState(0)
-  const [estimatedDuration, setEstimatedDuration] = useState(5400) // 90 mins default
   // Only true once the player says it is playing; guessing "playing" saved fake progress
   const [isPlaying, setIsPlaying] = useState(false)
   const lastRealTimeAtRef = useRef(0)
@@ -92,51 +98,69 @@ export default function Watch() {
     setNotice(text)
     noticeTimerRef.current = setTimeout(() => setNotice(''), ms)
   }, [])
-  // True when we moved off VidLink automatically, so the next title tries VidLink again
+  // True when we moved off a server automatically, so the next title tries the default again
   const autoSwitchedRef = useRef(false)
+  // VidRift reported that none of its sources has this title
+  const [unavailable, setUnavailable] = useState(false)
+  // VidRift's latest source list: { list: [{ value, state }], current }
+  const [sources, setSources] = useState(null)
+  // VidRift's full player state (vidrift:state), which our settings panel is drawn from
+  const [playerState, setPlayerState] = useState(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsNotice, setSettingsNotice] = useState('')
 
   // Servers without a seek message (VidLink) start at this time; changing it reloads the player
   const [startAt, setStartAt] = useState(0)
-  const urlSeekTimerRef = useRef(null)
 
   // 1. Fetch metadata
   useEffect(() => {
+    let cancelled = false
     setLoading(true)
+    setDetailsError(false)
+    setDetails(null)
     const fetchFn = isTVRoute ? getTVDetails : getMovieDetails
     fetchFn(mediaId)
       .then((data) => {
+        if (cancelled) return
         setDetails(data)
         const dur = (data.runtime ? data.runtime * 60 : 5400)
-        setEstimatedDuration(dur)
         durationRef.current = dur
         setLoading(false)
       })
       .catch((err) => {
+        if (cancelled) return
         console.error(err)
+        setDetailsError(true)
         setLoading(false)
       })
+    return () => { cancelled = true }
   }, [mediaId, isTVRoute])
 
   // 2. Fetch TV season if applicable
   useEffect(() => {
+    let cancelled = false
+    setSeasonData(null)
     if (isTVRoute && mediaId) {
       getTVSeasonDetails(mediaId, currentSeason)
         .then((data) => {
+          if (cancelled) return
           setSeasonData(data)
           const ep = data?.episodes?.find((e) => e.episode_number === currentEpisode)
           if (ep?.runtime) {
             const epDur = ep.runtime * 60
-            setEstimatedDuration(epDur)
             durationRef.current = epDur
           }
         })
         .catch(console.error)
     }
+    return () => { cancelled = true }
   }, [isTVRoute, mediaId, currentSeason, currentEpisode])
 
   // 3. Check for saved playback position on mount or episode change
   useEffect(() => {
     setStartAt(0)
+    setIsPlaying(false)
+    lastRealTimeAtRef.current = 0
     if (autoSwitchedRef.current) {
       autoSwitchedRef.current = false
       setSelectedServer(SERVERS[0].id)
@@ -147,11 +171,9 @@ export default function Watch() {
         time: saved.currentTime,
         formatted: formatTime(saved.currentTime)
       })
-      setCurrentSeconds(saved.currentTime)
       secondsRef.current = saved.currentTime
     } else {
       setResumePrompt(null)
-      setCurrentSeconds(0)
       secondsRef.current = 0
     }
   }, [mediaId, isTVRoute, currentSeason, currentEpisode])
@@ -179,50 +201,42 @@ export default function Watch() {
   // 4. Listen to postMessage events from iframe
   useEffect(() => {
     const handleMessage = (e) => {
-      let data = e.data
-      if (!data) return
-
-      // VidLink: { type: 'PLAYER_EVENT', data: { event, currentTime, duration } }
-      if (data.type === 'PLAYER_EVENT' && data.data && e.origin === 'https://vidlink.pro') {
-        const { event, currentTime, duration } = data.data
-        data = { event, currentTime, duration }
+      // Accepts only well-formed events from the active provider's own frame.
+      const msg = playerMessage(e, iframeRef.current, selectedServer)
+      if (!msg) return
+      if (msg.sources) {
+        setSources({ list: msg.sources, current: msg.current })
+        if (msg.unavailable) setUnavailable(true)
+        return
       }
-
-      // Handle VidRift / player time events
-      if (
-        data.type === 'vidrift:timeupdate' ||
-        data.type === 'vidrift:progress' ||
-        data.type === 'timeupdate' ||
-        data.event === 'timeupdate'
-      ) {
-        const time = data.currentTime || data.time || data.seconds
-        const dur = data.duration || data.total
-        if (typeof time === 'number' && time > 0) {
-          secondsRef.current = Math.floor(time)
-          setCurrentSeconds(Math.floor(time))
-          lastRealTimeAtRef.current = Date.now()
-          setIsPlaying(true)
-        }
-        if (typeof dur === 'number' && dur > 0) {
-          durationRef.current = Math.floor(dur)
-          setEstimatedDuration(Math.floor(dur))
-        }
+      if (msg.state) {
+        setPlayerState(msg.state)
+        if (msg.state.servers.length) setSources({ list: msg.state.servers, current: msg.state.server })
+        return
       }
-
-      // VidRift sends vidrift:unpaused / vidrift:paused; VidLink sends play / pause / ended
-      if (data.type === 'vidrift:unpaused' || data.type === 'vidrift:play' || data.event === 'play') {
+      if (msg.commandError) {
+        // VidRift ignores commands from a sandboxing host until the viewer has
+        // clicked inside the player once (its popup check needs that click).
+        setSettingsNotice(msg.commandError.reason === 'click-required'
+          ? 'Tap the video once, then try that setting again.'
+          : "That setting isn't available for this title.")
+        return
+      }
+      if (msg.progress && msg.time > 0) {
+        secondsRef.current = Math.floor(msg.time)
+        lastRealTimeAtRef.current = Date.now()
         setIsPlaying(true)
-      } else if (
-        data.type === 'vidrift:paused' || data.type === 'vidrift:pause' || data.type === 'vidrift:ended' ||
-        data.event === 'pause' || data.event === 'ended'
-      ) {
-        setIsPlaying(false)
       }
+      if (msg.progress && msg.duration) {
+        durationRef.current = Math.floor(msg.duration)
+      }
+      if (msg.playing) setIsPlaying(true)
+      else if (msg.paused) setIsPlaying(false)
     }
 
     window.addEventListener('message', handleMessage)
     return () => window.removeEventListener('message', handleMessage)
-  }, [])
+  }, [selectedServer])
 
   // 5. Automatic Heartbeat Progress Saver (tracks elapsed time and auto-saves)
   useEffect(() => {
@@ -236,62 +250,108 @@ export default function Watch() {
       // Player said "play" but sends no times: estimate
       if (secondsRef.current < durationRef.current) {
         secondsRef.current += 3
-        setCurrentSeconds(secondsRef.current)
         persistProgress(secondsRef.current)
       }
     }, 3000)
 
     return () => {
       clearInterval(interval)
-      persistProgress(secondsRef.current)
     }
   }, [isPlaying, persistProgress])
 
-  // Dispatch quality override to VidRift iframe via postMessage
-  const applyQuality = useCallback((quality) => {
-    if (selectedServer === 'vidrift' && iframeRef.current?.contentWindow) {
-      try {
-        iframeRef.current.contentWindow.postMessage(
-          {
-            type: 'vidrift:set',
-            quality: quality,
-          },
-          'https://embed.vidrift.net'
-        )
-      } catch (e) {
-        console.warn('postMessage to VidRift failed', e)
-      }
-    }
+  // Commands to VidRift's parent control API (vidrift:set / get-state / resume)
+  const sendToPlayer = useCallback((message) => {
+    if (selectedServer !== 'vidrift') return
+    try { iframeRef.current?.contentWindow?.postMessage(message, 'https://embed.vidrift.net') } catch { /* frame gone */ }
   }, [selectedServer])
 
-  const handleQualityChange = (q) => {
-    setSelectedQuality(q)
-    applyQuality(q)
+  // Settings change: update the panel right away, then tell the player. The
+  // player answers with a fresh vidrift:state (or vidrift:command-error).
+  const applySetting = useCallback((patch) => {
+    setSettingsNotice('')
+    setPlayerState((current) => current && ({
+      ...current,
+      ...patch,
+      subtitleStyle: patch.subtitleStyle ? { ...current.subtitleStyle, ...patch.subtitleStyle } : current.subtitleStyle,
+    }))
+    sendToPlayer({ type: 'vidrift:set', ...patch })
+  }, [sendToPlayer])
+
+  // Auto subtitle size. VidRift draws captions at a fixed 17px × size%, whatever
+  // the video's size, so on a phone's ~220px-tall player they cover too much.
+  // Auto targets ~6.5% of the video height on touch screens (60–100% inline, up
+  // to 150% fullscreen) and 100% on desktop. Moving the size slider turns it off.
+  const playerBoxRef = useRef(null)
+  const [subtitleAuto, setSubtitleAuto] = useState(() => {
+    try { return localStorage.getItem(SUBTITLE_AUTO_KEY) !== 'off' } catch { return true }
+  })
+  const [autoSize, setAutoSize] = useState(100)
+  useEffect(() => {
+    const box = playerBoxRef.current
+    if (!box) return
+    const measure = () => {
+      const fullscreen = document.fullscreenElement === iframeRef.current
+      const touch = window.matchMedia('(pointer: coarse)').matches
+      const { width, height } = fullscreen ? { width: window.innerWidth, height: window.innerHeight } : box.getBoundingClientRect()
+      if (!height) return
+      if (!touch && width > 768) return setAutoSize(100)
+      const percent = Math.round((height * 0.065) / 17 * 10) * 10
+      setAutoSize(Math.max(60, Math.min(fullscreen ? 150 : 100, percent)))
+    }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(box)
+    document.addEventListener('fullscreenchange', measure)
+    return () => { observer.disconnect(); document.removeEventListener('fullscreenchange', measure) }
+  }, [])
+  useEffect(() => {
+    const current = playerState?.subtitleStyle?.size
+    if (!subtitleAuto || current == null || current === autoSize) return
+    applySetting({ subtitleStyle: { size: autoSize } })
+  }, [subtitleAuto, autoSize, playerState?.subtitleStyle?.size, applySetting])
+  const chooseSubtitleAuto = (on) => {
+    setSubtitleAuto(on)
+    try { localStorage.setItem(SUBTITLE_AUTO_KEY, on ? 'on' : 'off') } catch { /* session only */ }
+  }
+  // Settings from the panel: a manual size switches auto sizing off.
+  const applyPanelSetting = (patch) => {
+    if (patch.subtitleStyle && 'size' in patch.subtitleStyle) chooseSubtitleAuto(false)
+    applySetting(patch)
   }
 
   const currentServerObj = SERVERS.find((s) => s.id === selectedServer) || SERVERS[0]
 
+  // Compatibility is remembered only for the exact playback it was chosen for,
+  // so a new title, episode or server always starts in Strict mode.
+  const keyFor = (server) => `${isTVRoute ? 'tv' : 'movie'}:${mediaId}:${currentSeason}:${currentEpisode}:${server}`
+  const playbackKey = keyFor(selectedServer)
+  const [compatibilityFor, setCompatibilityFor] = useState(null)
+
+  // Explicit opt-in from the "not available" prompt: VidLink with Compatibility
+  // for this playback only (it shows "Please Disable Sandbox" otherwise).
+  const tryBackupServer = () => {
+    autoSwitchedRef.current = true
+    setStartAt(secondsRef.current)
+    setCompatibilityFor(keyFor('vidlink'))
+    setSelectedServer('vidlink')
+  }
+  const strict = compatibilityFor !== playbackKey
+  const [protectionOpen, setProtectionOpen] = useState(false)
+  const [navigationStopped, setNavigationStopped] = useState(false)
+
   // Jump the player to a time: by message where supported, otherwise reload at ?startAt=
-  const seekPlayer = useCallback((time, { debounce = false } = {}) => {
+  const seekPlayer = useCallback((time) => {
     if (currentServerObj.seek === 'message') {
       try {
-        iframeRef.current?.contentWindow?.postMessage({ type: 'vidrift:seek', time }, '*')
+        iframeRef.current?.contentWindow?.postMessage({ type: 'vidrift:resume', currentTime: time }, 'https://embed.vidrift.net')
       } catch { /* ignore */ }
       return
     }
-    clearTimeout(urlSeekTimerRef.current)
-    const reload = () => {
-      setStartAt(time)
-      setPlayerNonce((n) => n + 1)
-    }
-    if (debounce) urlSeekTimerRef.current = setTimeout(reload, 700)
-    else reload()
+    setStartAt(time)
+    setPlayerNonce((n) => n + 1)
   }, [currentServerObj])
 
-  useEffect(() => () => {
-    clearTimeout(urlSeekTimerRef.current)
-    clearTimeout(noticeTimerRef.current)
-  }, [])
+  useEffect(() => () => clearTimeout(noticeTimerRef.current), [])
 
   const handleIframeLoad = () => {
     // VidLink had nothing for this title and opened our fallback page
@@ -299,6 +359,11 @@ export default function Watch() {
     let framePath = ''
     try { framePath = iframeRef.current?.contentWindow?.location?.pathname || '' } catch { /* cross-origin */ }
     if (framePath === MISSING_PAGE) {
+      // Already came here because VidRift had nothing: don't bounce back.
+      if (autoSwitchedRef.current) {
+        showNotice("This title isn't available on any server right now.", 6000)
+        return
+      }
       const backup = SERVERS.find((s) => s.id !== selectedServer)
       if (backup) {
         autoSwitchedRef.current = true
@@ -317,26 +382,32 @@ export default function Watch() {
     if (frameLoadsRef.current > 1 && sinceCreated > 5000) {
       const now = Date.now()
       restoreTimesRef.current = restoreTimesRef.current.filter((t) => now - t < 60000)
-      // Safety valve: if something keeps navigating the frame, stop fighting it
-      if (restoreTimesRef.current.length < 5) {
-        restoreTimesRef.current.push(now)
-        seekAfterRestoreRef.current = secondsRef.current
-        persistProgress(secondsRef.current)
-        setResumePrompt(null)
-        showNotice('Blocked an ad, restoring your player…')
-        if (currentServerObj.seek === 'url') {
-          seekAfterRestoreRef.current = 0
-          setStartAt(secondsRef.current)
-        }
-        setPlayerNonce((n) => n + 1)
+      // Stop condition: if something keeps navigating the frame, stop reloading
+      // it (a reload loop is worse than the ad) and tell the viewer what to do.
+      if (restoreTimesRef.current.length >= 5) {
+        setNavigationStopped(true)
         return
       }
+      restoreTimesRef.current.push(now)
+      seekAfterRestoreRef.current = secondsRef.current
+      persistProgress(secondsRef.current)
+      setResumePrompt(null)
+      showNotice('Blocked an ad, restoring your player…')
+      if (currentServerObj.seek === 'url') {
+        seekAfterRestoreRef.current = 0
+        setStartAt(secondsRef.current)
+      }
+      setPlayerNonce((n) => n + 1)
+      return
     }
 
     if (selectedServer === 'vidrift') {
-      applyQuality(selectedQuality)
-      setTimeout(() => applyQuality(selectedQuality), 1500)
-      setTimeout(() => applyQuality(selectedQuality), 3500)
+      // Ask for the player's state (it keeps sending updates after this). Repeat a
+      // couple of times in case its listener isn't ready the moment the page loads.
+      const askState = () => sendToPlayer({ type: 'vidrift:get-state' })
+      askState()
+      setTimeout(askState, 1500)
+      setTimeout(askState, 4000)
 
       // Restored after an ad hijack: jump back to where we were
       const seekTo = seekAfterRestoreRef.current
@@ -344,7 +415,7 @@ export default function Watch() {
         seekAfterRestoreRef.current = 0
         const seek = () => {
           try {
-            iframeRef.current?.contentWindow?.postMessage({ type: 'vidrift:seek', time: seekTo }, '*')
+            iframeRef.current?.contentWindow?.postMessage({ type: 'vidrift:resume', currentTime: seekTo }, 'https://embed.vidrift.net')
           } catch { /* ignore */ }
         }
         setTimeout(seek, 1500)
@@ -361,20 +432,9 @@ export default function Watch() {
 
   const handleRestartPlayback = () => {
     secondsRef.current = 0
-    setCurrentSeconds(0)
     persistProgress(0)
     seekPlayer(0)
     setResumePrompt(null)
-  }
-
-  // Manual Seek Helper
-  const handleManualSeek = (delta) => {
-    const next = Math.max(0, Math.min(durationRef.current, secondsRef.current + delta))
-    secondsRef.current = next
-    setCurrentSeconds(next)
-    persistProgress(next)
-    // Debounced so tapping +10s a few times reloads VidLink once
-    seekPlayer(next, { debounce: true })
   }
 
   // Episode navigation helpers
@@ -387,25 +447,80 @@ export default function Watch() {
     navigate(`/watch/tv/${mediaId}/${s}/${e}`)
   }
 
+  // VidRift ignores its ?dub= parameter (verified), so the URL always asks for the
+  // dub and the audio toggle switches VidRift's source by message instead. That
+  // also means toggling doesn't reload the player.
   const playerSrc = isTVRoute
-    ? currentServerObj.getTvUrl(mediaId, currentSeason, currentEpisode, englishDefault, startAt)
-    : currentServerObj.getMovieUrl(mediaId, englishDefault, startAt)
+    ? currentServerObj.getTvUrl(mediaId, currentSeason, currentEpisode, true, startAt)
+    : currentServerObj.getMovieUrl(mediaId, true, startAt)
 
-  const playerKey = `${playerSrc}-${selectedServer}-${playerNonce}`
+  // Sandbox flags only apply when a frame loads, so the mode is part of the key.
+  const playerKey = `${playerSrc}-${selectedServer}-${strict ? 'strict' : 'compat'}-${playerNonce}`
   useEffect(() => {
     frameLoadsRef.current = 0
     frameCreatedAtRef.current = Date.now()
+    setSources(null)
+    setPlayerState(null)
+    setSettingsNotice('')
   }, [playerKey])
 
-  if (loading) {
-    return (
-      <div className="watch-page">
-        <div className="loading-container" style={{ minHeight: '60vh' }}>
-          <div className="spinner"></div>
-        </div>
-      </div>
-    )
+  // Audio: for anime VidRift offers an English-dub source ("animedub") and a
+  // subbed source ("anime"). English is the default; when the dub exists and
+  // hasn't failed, make sure it is the one playing. Movies and non-anime shows
+  // come as a single audio track, so there is nothing to choose for them.
+  const hasSource = (value) => sources?.list.some((s) => s.value === value && s.state !== 'failed')
+  const dubChoice = selectedServer === 'vidrift' && hasSource(DUB_SOURCE) && hasSource(SUB_SOURCE)
+  const requestedSourceRef = useRef('')
+  useEffect(() => {
+    if (!dubChoice) return
+    const wanted = englishDefault ? DUB_SOURCE : SUB_SOURCE
+    const request = `${playerKey}:${wanted}`
+    if (sources.current === wanted || requestedSourceRef.current === request) return
+    requestedSourceRef.current = request
+    const frame = iframeRef.current?.contentWindow
+    const at = secondsRef.current
+    try {
+      frame?.postMessage({ type: 'vidrift:set', server: wanted }, 'https://embed.vidrift.net')
+      // Switching source can restart the episode; put the viewer back where they were.
+      if (at > 5) setTimeout(() => {
+        try { iframeRef.current?.contentWindow?.postMessage({ type: 'vidrift:resume', currentTime: at }, 'https://embed.vidrift.net') } catch { /* ignore */ }
+      }, 2500)
+    } catch { /* ignore */ }
+  }, [dubChoice, englishDefault, sources, playerKey])
+
+  // Subtitles: prefer English ("en" first, then any track labelled English).
+  const lastSubtitleRef = useRef('')
+  const englishSubtitle = (state) => {
+    const subs = state?.subtitles.filter((s) => s.value !== 'off') || []
+    return subs.find((s) => s.value === 'en') || subs.find((s) => /^english/i.test(s.label)) || subs[0] || null
   }
+  const subtitlesOn = Boolean(playerState?.subtitle && playerState.subtitle !== 'off')
+  const toggleSubtitles = () => {
+    if (!playerState) return
+    if (subtitlesOn) {
+      lastSubtitleRef.current = playerState.subtitle
+      applySetting({ subtitle: 'off' })
+    } else {
+      const pick = playerState.subtitles.find((s) => s.value === lastSubtitleRef.current) || englishSubtitle(playerState)
+      if (pick) applySetting({ subtitle: pick.value })
+    }
+  }
+  // Original audio for anime means Japanese: turn English subtitles on once if they're off.
+  const autoSubsRef = useRef('')
+  useEffect(() => {
+    if (englishDefault || !playerState || playerState.server !== SUB_SOURCE || playerState.subtitle !== 'off') return
+    if (autoSubsRef.current === playerKey) return
+    const pick = englishSubtitle(playerState)
+    if (!pick) return
+    autoSubsRef.current = playerKey
+    applySetting({ subtitle: pick.value })
+  }, [englishDefault, playerState, playerKey, applySetting])
+
+  useEffect(() => {
+    restoreTimesRef.current = []
+    setNavigationStopped(false)
+    setUnavailable(false)
+  }, [playbackKey, strict])
 
   const title = details?.title || details?.name || 'Now Playing'
   const year = (details?.release_date || details?.first_air_date) ? new Date(details.release_date || details.first_air_date).getFullYear() : ''
@@ -414,16 +529,92 @@ export default function Watch() {
   const seasons = details?.seasons?.filter((s) => s.season_number > 0) || []
 
   return (
-    <div className="watch-page">
+    <div className={`watch-page${docked ? ' corner-player' : ''}`} role={docked ? 'region' : undefined} aria-label={docked ? 'Mini player' : undefined}>
+      <div className="corner-player-bar">
+        <button className="corner-player-title" onClick={onExpand} title="Return to full player">
+          <span className="corner-live-dot" aria-hidden="true" /><span>{title}{isTVRoute ? ` · S${currentSeason} E${currentEpisode}` : ''}</span>
+        </button>
+        <button onClick={onExpand} aria-label="Expand player" title="Expand player"><FiMaximize2 /></button>
+        <button onClick={() => { persistProgress(secondsRef.current); onClose() }} aria-label="Close player" title="Close player"><FiX /></button>
+      </div>
       <header className="watch-top-bar">
         <div className="watch-top-left">
-          <Link to="/" className="watch-brand-link">MOVIEPLAYER</Link>
-          <button className="back-btn" onClick={() => { persistProgress(secondsRef.current); navigate(-1) }}>
-            <FiArrowLeft /> Back
-          </button>
+          {/* Leaving the watch route docks the player into the mini player (see App.jsx) */}
+          <Link to="/" className="watch-brand-link" onClick={() => persistProgress(secondsRef.current)}>MOVIEPLAYER</Link>
         </div>
 
-        {/* TV Quick Navigation */}
+        <div className="watch-controls-group">
+          {/* Strict is the normal state, so nothing is shown for it. The badge only
+              appears after the viewer opted into the backup server, as a warning
+              and a way back to full protection. */}
+          {!strict && (
+            <button
+              className="control-btn protection-toggle compat"
+              onClick={() => setProtectionOpen(true)}
+              aria-haspopup="dialog"
+              title="Player protection is reduced for this playback"
+            >
+              <FiShield /> Reduced protection
+            </button>
+          )}
+        </div>
+      </header>
+
+      {/* Main Video Player Container */}
+      <div className="player-container" ref={playerBoxRef}>
+        {loading && <div className="player-loading-label" role="status">Loading title…</div>}
+        {/* Resume Banner Prompt */}
+        {resumePrompt && (
+          <div className="resume-floating-banner">
+            <div className="resume-banner-text">
+              <FiClock size={18} />
+              <span>Resume playback from <strong>{resumePrompt.formatted}</strong>?</span>
+            </div>
+            <div className="resume-banner-actions">
+              <button className="btn-resume-confirm" onClick={handleResumePlayback}>
+                <FiPlay size={14} /> Resume ({resumePrompt.formatted})
+              </button>
+              <button className="btn-resume-restart" onClick={handleRestartPlayback}>
+                <FiRotateCcw size={14} /> Start Over
+              </button>
+            </div>
+          </div>
+        )}
+
+        {notice && <div className="ad-blocked-toast" role="status">{notice}</div>}
+        {unavailable && selectedServer === 'vidrift' && (
+          <div className="unavailable-prompt" role="alert">
+            <strong>This title isn't available on VidRift right now.</strong>
+            <p>The backup server plays without the player sandbox, so popups and redirects may get through.</p>
+            <div className="unavailable-actions">
+              <button className="btn btn-play" onClick={tryBackupServer}>Try backup server</button>
+              <button className="protection-compatibility" onClick={() => setUnavailable(false)}>Dismiss</button>
+            </div>
+          </div>
+        )}
+        {navigationStopped && !notice && (
+          <div className="ad-blocked-toast" role="status">
+            This player keeps opening other pages, so restoring is paused. Reload the page to try again.
+          </div>
+        )}
+
+        <iframe
+          ref={iframeRef}
+          key={playerKey}
+          src={playerSrc}
+          onLoad={handleIframeLoad}
+          allowFullScreen
+          allow={PLAYER_PERMISSIONS}
+          // Strict: scripts + provider storage only. Compatibility: see services/protection.js
+          sandbox={playerSandbox(selectedServer, strict)}
+          referrerPolicy="origin"
+          title={title}
+        />
+      </div>
+
+      {/* Toolbar under the video: episode navigation, quick subtitles, settings */}
+      <div className="player-toolbar">
+        {/* Episode navigation */}
         {isTVRoute && seasons.length > 0 && (
           <div className="tv-nav-bar">
             <select
@@ -444,148 +635,71 @@ export default function Watch() {
                 disabled={!hasPrevEp}
                 onClick={() => goToEpisode(currentSeason, currentEpisode - 1)}
                 title="Previous episode"
+                aria-label="Previous episode"
               >
-                <FiChevronLeft /> Prev
+                <FiChevronLeft /> <span className="ep-step-label">Prev</span>
               </button>
               <span className="ep-badge">
-                Ep {currentEpisode} {totalEpisodesInSeason ? `/ ${totalEpisodesInSeason}` : ''}
+                <span className="ep-word">Ep </span>{currentEpisode}{totalEpisodesInSeason ? ` / ${totalEpisodesInSeason}` : ''}
               </span>
               <button
                 className="ep-step-btn"
                 disabled={!hasNextEp}
                 onClick={() => goToEpisode(currentSeason, currentEpisode + 1)}
                 title="Next episode"
+                aria-label="Next episode"
               >
-                Next <FiChevronRight />
+                <span className="ep-step-label">Next</span> <FiChevronRight />
               </button>
             </div>
           </div>
         )}
 
-        <div className="watch-controls-group">
-          {/* Quality Selector (VidRift only; VidLink has its own in-player menu) */}
+        <div className="player-toolbar-actions">
           {selectedServer === 'vidrift' && (
-          <div className="control-pill-group">
-            <span className="control-label"><FiSliders size={13} /> Quality:</span>
-            {['1080p', '4K', '720p', 'auto'].map((q) => (
-              <button
-                key={q}
-                className={`control-btn ${selectedQuality === q ? 'active' : ''}`}
-                onClick={() => handleQualityChange(q)}
-              >
-                {q.toUpperCase()}
+            <>
+              <button className={`toolbar-btn cc-btn${subtitlesOn ? ' active' : ''}`} onClick={toggleSubtitles}
+                disabled={!playerState || playerState.subtitles.length < 2}
+                aria-pressed={subtitlesOn} aria-label="Subtitles" title="Subtitles">
+                <span className="cc-glyph" aria-hidden="true">CC</span>
               </button>
-            ))}
-          </div>
+              <button className="toolbar-btn" onClick={() => setSettingsOpen(true)} aria-haspopup="dialog" aria-label="Player settings" title="Player settings">
+                <FiSettings aria-hidden="true" /> <span className="toolbar-btn-label">Settings</span>
+              </button>
+            </>
           )}
-
-          {/* Audio Preference */}
-          {selectedServer === 'vidrift' && (
-            <div className="control-pill-group">
-              <button
-                className={`control-btn ${englishDefault ? 'active' : ''}`}
-                onClick={() => setEnglishDefault(true)}
-                title="Request English dub when available"
-              >
-                <FiVolume2 /> English
-              </button>
-              <button
-                className={`control-btn ${!englishDefault ? 'active' : ''}`}
-                onClick={() => setEnglishDefault(false)}
-                title="Original language"
-              >
-                <FiGlobe /> Original
-              </button>
-            </div>
-          )}
-
-          {/* Server Selector */}
-          <div className="control-pill-group">
-            <span className="control-label"><FiTv size={13} /> Server:</span>
-            {SERVERS.map((s) => (
-              <button
-                key={s.id}
-                className={`control-btn ${selectedServer === s.id ? 'active' : ''}`}
-                onClick={() => {
-                  if (s.id === selectedServer) return
-                  setStartAt(secondsRef.current)
-                  setSelectedServer(s.id)
-                }}
-              >
-                {s.name.split(' ')[0]}
-              </button>
-            ))}
-          </div>
         </div>
-      </header>
+      </div>
 
-      {/* Main Video Player Container */}
-      <div className="player-container">
-        {/* Resume Banner Prompt */}
-        {resumePrompt && (
-          <div className="resume-floating-banner">
-            <div className="resume-banner-text">
-              <FiClock size={18} />
-              <span>Resume playback from <strong>{resumePrompt.formatted}</strong>?</span>
-            </div>
-            <div className="resume-banner-actions">
-              <button className="btn-resume-confirm" onClick={handleResumePlayback}>
-                <FiPlay size={14} /> Resume ({resumePrompt.formatted})
-              </button>
-              <button className="btn-resume-restart" onClick={handleRestartPlayback}>
-                <FiRotateCcw size={14} /> Start Over
-              </button>
-            </div>
-          </div>
-        )}
-
-        {notice && <div className="ad-blocked-toast">{notice}</div>}
-
-        <iframe
-          ref={iframeRef}
-          key={playerKey}
-          src={playerSrc}
-          onLoad={handleIframeLoad}
-          allowFullScreen
-          allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
-          // See SERVERS: VidLink refuses any sandbox, VidRift needs allow-popups
-          sandbox={currentServerObj.sandbox ?? undefined}
-          referrerPolicy="origin"
-          title={title}
+      {settingsOpen && (
+        <PlayerSettings
+          state={playerState}
+          dubChoice={dubChoice}
+          englishDefault={englishDefault}
+          onAudioChoice={setEnglishDefault}
+          onSet={applyPanelSetting}
+          subtitleAuto={subtitleAuto}
+          onSubtitleAuto={() => chooseSubtitleAuto(true)}
+          notice={settingsNotice}
+          onClose={() => setSettingsOpen(false)}
         />
-      </div>
+      )}
 
-      {/* Position Scrubber & Sync Bar */}
-      <div className="watch-progress-bar-strip">
-        <div className="progress-info-left">
-          <FiBookmark size={15} color="#e50914" />
-          <span className="progress-label">Saved Position:</span>
-          <span className="progress-time-display">{formatTime(currentSeconds)}</span>
-          <span className="progress-total-display">/ {formatTime(estimatedDuration)}</span>
-        </div>
-        <div className="progress-quick-skips">
-          <button className="btn-skip" onClick={() => handleManualSeek(-60)} title="Jump backward 1 min">
-            -1m
-          </button>
-          <button className="btn-skip" onClick={() => handleManualSeek(-15)} title="Jump backward 15s">
-            -15s
-          </button>
-          <button className="btn-skip" onClick={() => handleManualSeek(15)} title="Jump forward 15s">
-            +15s
-          </button>
-          <button className="btn-skip" onClick={() => handleManualSeek(60)} title="Jump forward 1 min">
-            +1m
-          </button>
-          <button className="btn-save-mark" onClick={() => persistProgress(secondsRef.current)}>
-            Bookmark Place
-          </button>
-        </div>
-      </div>
+      {protectionOpen && (
+        <ProtectionPanel
+          strict={strict}
+          server={selectedServer}
+          onStrict={() => { setCompatibilityFor(null); setProtectionOpen(false) }}
+          onCompatibility={() => { setCompatibilityFor(playbackKey); setProtectionOpen(false) }}
+          onClose={() => setProtectionOpen(false)}
+        />
+      )}
 
       {/* Details & Episode List */}
       <div className="watch-info">
+        {detailsError && <p role="status">Title details couldn't load. You can still try the player.</p>}
         <h1 className="watch-title">
-          {title} {isTVRoute && <span className="watch-ep-heading">• S{currentSeason} E{currentEpisode}: {currentEpData?.name || `Episode ${currentEpisode}`}</span>}
+          {title} {isTVRoute && <span className="watch-ep-heading"><span className="watch-ep-sep" aria-hidden="true">• </span>S{currentSeason} E{currentEpisode}: {currentEpData?.name || `Episode ${currentEpisode}`}</span>}
         </h1>
 
         <div className="watch-meta">
@@ -596,12 +710,11 @@ export default function Watch() {
           )}
           {year && <span>{year}</span>}
           {details?.genres?.map((g) => g.name).join(', ')}
-          <span className="quality-badge">Target: {selectedQuality.toUpperCase()}</span>
-          <span className="server-badge">Server: {currentServerObj.name}</span>
           <span className="type-badge">{isTVRoute ? 'TV SERIES' : 'MOVIE'}</span>
         </div>
 
         <p className="watch-overview">{currentEpData?.overview || details?.overview}</p>
+        {details && <LibraryActions movie={{ ...details, media_type: isTVRoute ? 'tv' : 'movie' }} />}
 
         {/* TV Episodes Grid */}
         {isTVRoute && seasonData?.episodes && seasonData.episodes.length > 0 && (
