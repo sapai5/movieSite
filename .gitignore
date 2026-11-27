@@ -49,3 +49,6 @@ build/
 ehthumbs.db
 Thumbs.db
 [Dd]esktop.ini
+# Desktop app build output and dependencies
+desktop/release/
+desktop/node_modules/

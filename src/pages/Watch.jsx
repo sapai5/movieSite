@@ -10,6 +10,7 @@ import {
   FiMaximize2,
   FiX,
   FiShield,
+  FiTv,
 } from 'react-icons/fi'
 import { FaStar } from 'react-icons/fa'
 import { getMovieDetails, getTVDetails, getTVSeasonDetails, getStillUrl } from '../services/tmdb'
@@ -19,11 +20,13 @@ import ProtectionPanel from '../components/ProtectionPanel'
 import PlayerSettings from '../components/PlayerSettings'
 import { playerSandbox, playerMessage, PLAYER_PERMISSIONS } from '../services/protection'
 
-// Sandboxing lives in services/protection.js. Every playback starts in Strict
-// mode (no popups, top navigation, downloads, forms or modals). Compatibility is
-// an explicit per-playback opt-out chosen in the Protection panel:
+// Sandboxing lives in services/protection.js. Modes: Strict (no popups, top
+// navigation, downloads, forms or modals) and Compatibility:
 // - VidLink shows "Please Disable Sandbox" inside any sandbox, so compatibility removes it.
 // - VidRift probes window.open() on the first click, so compatibility adds allow-popups.
+// Since 2026-11-25 VidRift's server flags this domain (gateBlock), so a failed probe
+// kills playback: VidRift therefore starts in Compatibility. Strict can still be
+// chosen in the Protection panel, but VidRift stops on the first click there.
 // seek: 'message' = accepts a postMessage seek, 'url' = only via ?startAt= (reload).
 const VIDLINK_OPTS = 'primaryColor=e50914&secondaryColor=a2a2a2&iconColor=ffffff&autoplay=true&nextbutton=true'
 const withStart = (url, start) => (start > 0 ? `${url}&startAt=${Math.floor(start)}` : url)
@@ -32,16 +35,20 @@ const withStart = (url, start) => (start > 0 ? `${url}&startAt=${Math.floor(star
 const MISSING_PAGE = '/vidlink-missing.html'
 const vidlinkFallback = () => `&fallback_url=${encodeURIComponent(window.location.origin + MISSING_PAGE)}`
 
-// The first server is the default. VidRift plays under Strict protection.
-// There is no manual server picker: VidLink is offered only when VidRift reports
-// that every source failed, and since it refuses any sandbox, accepting that
-// offer is the viewer's explicit choice of Compatibility for that playback.
+// The first server is the default; the header has a server picker. When VidRift
+// reports that every source failed, a prompt also offers VidLink.
 // VidRift source ids for anime: English dub and the original audio with subtitles.
 const SUBTITLE_AUTO_KEY = 'movieplayer_subtitle_auto_size'
 const DUB_SOURCE = 'animedub'
 const SUB_SOURCE = 'anime'
 
-const SERVERS = [
+// The desktop app (desktop/main.js) adds "MoviePlayerDesktop/" to its user agent.
+// It blocks popups, redirects, downloads and ad requests itself, so players run
+// unsandboxed there and VidLink comes first: the app denies every popup, which
+// fails VidRift's popup check.
+const IS_DESKTOP_APP = typeof navigator !== 'undefined' && /\bMoviePlayerDesktop\//.test(navigator.userAgent)
+
+const ALL_SERVERS = [
   {
     id: 'vidrift',
     name: 'VidRift (Primary)',
@@ -57,6 +64,7 @@ const SERVERS = [
     getTvUrl: (id, s, e, dub, start) => withStart(`https://vidlink.pro/tv/${id}/${s}/${e}?${VIDLINK_OPTS}${vidlinkFallback()}`, start),
   },
 ]
+const SERVERS = IS_DESKTOP_APP ? [...ALL_SERVERS].reverse() : ALL_SERVERS
 
 export default function Watch({ params, docked, onExpand, onClose }) {
   const navigate = useNavigate()
@@ -321,21 +329,34 @@ export default function Watch({ params, docked, onExpand, onClose }) {
 
   const currentServerObj = SERVERS.find((s) => s.id === selectedServer) || SERVERS[0]
 
-  // Compatibility is remembered only for the exact playback it was chosen for,
-  // so a new title, episode or server always starts in Strict mode.
+  // A mode chosen in the Protection panel is remembered only for the exact
+  // playback it was chosen for; a new title, episode or server starts in its default.
+  // Default is Compatibility for both servers: Strict now stops VidRift on the
+  // first click (see top of file) and VidLink refuses any sandbox. In the
+  // desktop app there's no sandbox at all (the app guards players itself).
   const keyFor = (server) => `${isTVRoute ? 'tv' : 'movie'}:${mediaId}:${currentSeason}:${currentEpisode}:${server}`
   const playbackKey = keyFor(selectedServer)
-  const [compatibilityFor, setCompatibilityFor] = useState(null)
+  const [modeOverride, setModeOverride] = useState(null) // { key, strict }
+  const defaultStrict = false
+
+  // Manual server choice from the header picker
+  const switchServer = (id) => {
+    if (id === selectedServer) return
+    autoSwitchedRef.current = false
+    setUnavailable(false)
+    setStartAt(secondsRef.current)
+    setSelectedServer(id)
+  }
 
   // Explicit opt-in from the "not available" prompt: VidLink with Compatibility
   // for this playback only (it shows "Please Disable Sandbox" otherwise).
   const tryBackupServer = () => {
     autoSwitchedRef.current = true
     setStartAt(secondsRef.current)
-    setCompatibilityFor(keyFor('vidlink'))
+    setModeOverride({ key: keyFor('vidlink'), strict: false })
     setSelectedServer('vidlink')
   }
-  const strict = compatibilityFor !== playbackKey
+  const strict = modeOverride?.key === playbackKey ? modeOverride.strict : defaultStrict
   const [protectionOpen, setProtectionOpen] = useState(false)
   const [navigationStopped, setNavigationStopped] = useState(false)
 
@@ -547,7 +568,22 @@ export default function Watch({ params, docked, onExpand, onClose }) {
           {/* Strict is the normal state, so nothing is shown for it. The badge only
               appears after the viewer opted into the backup server, as a warning
               and a way back to full protection. */}
-          {!strict && (
+          <div className="control-pill-group" role="group" aria-label="Server">
+            <span className="control-label"><FiTv size={13} /> Server:</span>
+            {SERVERS.map((s) => (
+              <button
+                key={s.id}
+                className={`control-btn ${selectedServer === s.id ? 'active' : ''}`}
+                aria-pressed={selectedServer === s.id}
+                onClick={() => switchServer(s.id)}
+              >
+                {s.name.split(' ')[0]}
+              </button>
+            ))}
+          </div>
+
+          {/* The desktop app blocks popups/redirects itself, so no warning there */}
+          {!strict && !IS_DESKTOP_APP && (
             <button
               className="control-btn protection-toggle compat"
               onClick={() => setProtectionOpen(true)}
@@ -606,7 +642,7 @@ export default function Watch({ params, docked, onExpand, onClose }) {
           allowFullScreen
           allow={PLAYER_PERMISSIONS}
           // Strict: scripts + provider storage only. Compatibility: see services/protection.js
-          sandbox={playerSandbox(selectedServer, strict)}
+          sandbox={IS_DESKTOP_APP ? undefined : playerSandbox(selectedServer, strict)}
           referrerPolicy="origin"
           title={title}
         />
@@ -689,8 +725,8 @@ export default function Watch({ params, docked, onExpand, onClose }) {
         <ProtectionPanel
           strict={strict}
           server={selectedServer}
-          onStrict={() => { setCompatibilityFor(null); setProtectionOpen(false) }}
-          onCompatibility={() => { setCompatibilityFor(playbackKey); setProtectionOpen(false) }}
+          onStrict={() => { setModeOverride({ key: playbackKey, strict: true }); setProtectionOpen(false) }}
+          onCompatibility={() => { setModeOverride({ key: playbackKey, strict: false }); setProtectionOpen(false) }}
           onClose={() => setProtectionOpen(false)}
         />
       )}
